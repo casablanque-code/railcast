@@ -1,0 +1,12 @@
+name = "railcast-api"
+main = "src/index.ts"
+compatibility_date = "2026-08-01"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "railcast"
+database_id = "6dc08ee1-4aa6-42db-92de-d4b78baf1556"
+
+[[r2_buckets]]
+binding = "BUILDS"
+bucket_name = "railcast-builds"
