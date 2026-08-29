@@ -35,12 +35,12 @@ func cmdKeygen() {
 	pubB64 := base64.StdEncoding.EncodeToString(pub)
 	privB64 := base64.StdEncoding.EncodeToString(priv)
 
-	fmt.Println("Public key (сохрани это в Railcast при создании app):")
+	fmt.Println("Public key (save this in Railcast when creating the app):")
 	fmt.Println(pubB64)
 	fmt.Println()
-	fmt.Println("Private key (храни локально, НИКОГДА никому не показывай, потеря = не сможешь публиковать):")
+	fmt.Println("Private key (keep this local, NEVER share it — losing it means you can't publish anymore):")
 	fmt.Println(privB64)
 	fmt.Println()
-	fmt.Println("Рекомендуется сохранить приватный ключ в файл, например:")
-	fmt.Println("  railcast keygen > ~/.railcast/demoapp.key")
+	fmt.Println("Recommended: save the private key to a file, e.g.:")
+	fmt.Println("  railcast keygen | tee ~/.railcast/myapp.key")
 }
