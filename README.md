@@ -21,8 +21,9 @@ Sparkle is a great free auto-update library, but it deliberately hosts nothing: 
                     Sparkle client on the user's machine
 ```
 
-- **`worker/`** — Cloudflare Worker (TypeScript). Serves appcast.xml, accepts file uploads, hosts the dashboard with magic-link login.
+- **`worker/`** — Cloudflare Worker (TypeScript). Serves appcast.xml, accepts file uploads, magic-link auth, JSON API for the dashboard.
 - **`cli/`** — Go CLI (`railcast`). Signing key generation, version publishing.
+- **`dashboard/`** — Next.js dashboard (static export, deployed to Cloudflare Pages). Talks to the Worker's `/api/*` JSON endpoints over the shared `.railcast.casablanque.com` cookie domain.
 
 ## Quickstart
 
@@ -105,7 +106,12 @@ Every endpoint except `appcast.xml` requires an `Authorization: Bearer <token>` 
 | `PUT` | `/:appId/upload/:filename` | Upload a build file to R2 |
 | `POST` | `/:appId/versions` | Register a version (after the file upload succeeds) |
 | `POST` | `/auth/request` | Send a magic link to an email (`{"email": "..."}`) |
-| `GET` | `/auth/verify?token=...` | Confirm login via the link from the email |
+| `GET` | `/auth/verify?token=...` | Confirm login via the link from the email; sets the session cookie and redirects to the dashboard |
+| `GET` | `/api/me` | Current logged-in user (cookie session) |
+| `GET` | `/api/apps` | List your apps (cookie session) |
+| `POST` | `/api/apps` | Create an app: `{"id": "myapp", "signing_public_key": "..."}` (cookie session) |
+| `GET` | `/api/tokens` | List your API tokens — only a preview, never the full secret again (cookie session) |
+| `POST` | `/api/tokens` | Create a new API token, returned once (cookie session) |
 
 `POST /:appId/versions` request body:
 ```json
@@ -137,16 +143,50 @@ Local environment variables go in `worker/.dev.vars` (gitignored, see `.gitignor
 RESEND_API_KEY=...
 ```
 
+### Dashboard
+
+```bash
+cd dashboard
+npm install
+cp .env.example .env.local   # point NEXT_PUBLIC_API_BASE at your Worker
+npm run dev
+```
+
+Deployed as a Cloudflare Pages static export (`npm run build` → publish the `out/` directory), on a subdomain that shares the `.railcast.casablanque.com` cookie domain with the Worker (currently configured as `app.railcast.casablanque.com` — see `CORS_ORIGIN` in `worker/wrangler.toml`, update both together if you rename it).
+
+## Testing
+
+```bash
+# Worker — typecheck + integration tests against the real Workers runtime (Miniflare)
+cd worker && npm install && npm run typecheck && npm test
+
+# CLI
+cd cli && go build ./... && go vet ./... && go test ./...
+```
+
+## CI/CD
+
+- **`.github/workflows/test.yml`** — runs on every push/PR: Worker typecheck + vitest, CLI build/vet/test. No deploy step — Cloudflare's own Git integration deploys the Worker (and can deploy Pages) automatically on push to `main`.
+- **`.github/workflows/release.yml`** — on any `vX.Y.Z` tag push: cross-compiles the CLI for macOS (amd64/arm64), Linux (amd64/arm64), and Windows (amd64), and publishes a GitHub Release with the binaries + `sha256` checksums and an auto-generated changelog.
+
+To cut a release:
+```bash
+git tag v0.1.0
+git push origin v0.1.0
+```
+
 ## Project status
 
 - [x] appcast.xml generation from D1
 - [x] File uploads to R2, EdDSA signing in the CLI
-- [x] Magic-link auth, dashboard (app creation, token issuance)
+- [x] Magic-link auth, JSON API, dashboard (app creation, token issuance)
 - [x] Production deploy on a custom domain
+- [x] Worker test suite (Miniflare) + CLI unit tests
+- [x] CI (tests) and tag-triggered CLI release builds
 - [ ] Live test against a real macOS app using Sparkle
 - [ ] WinSparkle support (Windows)
 - [ ] Velopack support
-- [ ] Billing (Paddle)
+- [ ] Billing — Paddle is wired up in an earlier draft of the roadmap, but the plan is now to find a processor that works for an individual (not a legal entity), ideally also usable from the RU market; revisit after the product itself works end-to-end
 
 ## Stack
 

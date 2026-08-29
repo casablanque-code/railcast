@@ -6,5 +6,6 @@
     "types": ["@cloudflare/workers-types"],
     "strict": true,
     "skipLibCheck": true
-  }
+  },
+  "exclude": ["test", "node_modules"]
 }

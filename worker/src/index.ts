@@ -3,6 +3,7 @@ export interface Env {
   BUILDS: R2Bucket;
   PUBLIC_FILE_BASE_URL: string;
   RESEND_API_KEY: string;
+  CORS_ORIGIN: string;
 }
 
 interface VersionRow {
@@ -186,8 +187,8 @@ async function handleAuthVerify(request: Request, env: Env): Promise<Response> {
   return new Response(null, {
     status: 302,
     headers: {
-      Location: "/dashboard",
-      "Set-Cookie": `session=${sessionId}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=${
+      Location: `${env.CORS_ORIGIN}/dashboard`,
+      "Set-Cookie": `session=${sessionId}; Domain=.railcast.casablanque.com; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=${
         30 * 24 * 60 * 60
       }`,
     },
@@ -199,7 +200,7 @@ function handleLogout(): Response {
     status: 302,
     headers: {
       Location: "/login",
-      "Set-Cookie": "session=; Path=/; HttpOnly; Max-Age=0",
+      "Set-Cookie": "session=; Domain=.railcast.casablanque.com; Path=/; HttpOnly; Max-Age=0",
     },
   });
 }
@@ -389,7 +390,114 @@ async function handleCreateToken(request: Request, env: Env): Promise<Response> 
   });
 }
 
-// ---------- Upload / versions / appcast (CLI-facing API) ----------
+// ---------- JSON API (used by the Next.js dashboard) ----------
+
+function corsHeaders(env: Env): Record<string, string> {
+  return {
+    "Access-Control-Allow-Origin": env.CORS_ORIGIN,
+    "Access-Control-Allow-Credentials": "true",
+    "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+    "Access-Control-Allow-Headers": "Content-Type",
+    Vary: "Origin",
+  };
+}
+
+function jsonResponse(env: Env, body: unknown, status = 200): Response {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { "Content-Type": "application/json", ...corsHeaders(env) },
+  });
+}
+
+async function handleApiMe(request: Request, env: Env): Promise<Response> {
+  const user = await getSessionUser(request, env);
+  if (!user) return jsonResponse(env, { error: "unauthorized" }, 401);
+  return jsonResponse(env, { id: user.id, email: user.email });
+}
+
+async function handleApiListApps(request: Request, env: Env): Promise<Response> {
+  const user = await getSessionUser(request, env);
+  if (!user) return jsonResponse(env, { error: "unauthorized" }, 401);
+
+  const { results } = await env.DB.prepare(
+    `SELECT id, signing_public_key, created_at FROM apps WHERE owner_user_id = ? ORDER BY created_at DESC`
+  )
+    .bind(user.id)
+    .all<{ id: string; signing_public_key: string; created_at: number }>();
+
+  return jsonResponse(env, { apps: results ?? [] });
+}
+
+async function handleApiCreateApp(request: Request, env: Env): Promise<Response> {
+  const user = await getSessionUser(request, env);
+  if (!user) return jsonResponse(env, { error: "unauthorized" }, 401);
+
+  let body: { id?: string; signing_public_key?: string };
+  try {
+    body = await request.json();
+  } catch {
+    return jsonResponse(env, { error: "invalid_json" }, 400);
+  }
+
+  const appId = body.id?.trim() ?? "";
+  const publicKey = body.signing_public_key?.trim() ?? "";
+
+  if (!/^[a-zA-Z0-9_-]{1,64}$/.test(appId) || !publicKey) {
+    return jsonResponse(
+      env,
+      { error: "invalid_input", message: "app id and signing_public_key are required; id must match [a-zA-Z0-9_-]{1,64}" },
+      400
+    );
+  }
+
+  const existing = await env.DB.prepare(`SELECT id FROM apps WHERE id = ?`).bind(appId).first();
+  if (existing) {
+    return jsonResponse(env, { error: "app_exists" }, 409);
+  }
+
+  await env.DB.prepare(
+    `INSERT INTO apps (id, owner_email, owner_user_id, signing_public_key, created_at)
+     VALUES (?, ?, ?, ?, unixepoch())`
+  )
+    .bind(appId, user.email, user.id, publicKey)
+    .run();
+
+  return jsonResponse(env, { id: appId, signing_public_key: publicKey }, 201);
+}
+
+async function handleApiListTokens(request: Request, env: Env): Promise<Response> {
+  const user = await getSessionUser(request, env);
+  if (!user) return jsonResponse(env, { error: "unauthorized" }, 401);
+
+  const { results } = await env.DB.prepare(
+    `SELECT token, created_at FROM api_tokens WHERE user_id = ? ORDER BY created_at DESC`
+  )
+    .bind(user.id)
+    .all<{ token: string; created_at: number }>();
+
+  // Never re-expose the full secret once it's been issued — only enough to recognize it.
+  const tokens = (results ?? []).map((t) => ({
+    preview: `${t.token.slice(0, 8)}…`,
+    created_at: t.created_at,
+  }));
+
+  return jsonResponse(env, { tokens });
+}
+
+async function handleApiCreateToken(request: Request, env: Env): Promise<Response> {
+  const user = await getSessionUser(request, env);
+  if (!user) return jsonResponse(env, { error: "unauthorized" }, 401);
+
+  const token = randomToken();
+  await env.DB.prepare(
+    `INSERT INTO api_tokens (token, user_id, created_at) VALUES (?, ?, unixepoch())`
+  )
+    .bind(token, user.id)
+    .run();
+
+  // Shown once — the dashboard must display and copy it immediately, we never return it again.
+  return jsonResponse(env, { token }, 201);
+}
 
 async function handleUpload(
   request: Request,
@@ -590,6 +698,28 @@ export default {
     }
     if (url.pathname === "/auth/verify" && request.method === "GET") {
       return handleAuthVerify(request, env);
+    }
+
+    if (url.pathname.startsWith("/api/")) {
+      if (request.method === "OPTIONS") {
+        return new Response(null, { status: 204, headers: corsHeaders(env) });
+      }
+      if (url.pathname === "/api/me" && request.method === "GET") {
+        return handleApiMe(request, env);
+      }
+      if (url.pathname === "/api/apps" && request.method === "GET") {
+        return handleApiListApps(request, env);
+      }
+      if (url.pathname === "/api/apps" && request.method === "POST") {
+        return handleApiCreateApp(request, env);
+      }
+      if (url.pathname === "/api/tokens" && request.method === "GET") {
+        return handleApiListTokens(request, env);
+      }
+      if (url.pathname === "/api/tokens" && request.method === "POST") {
+        return handleApiCreateToken(request, env);
+      }
+      return jsonResponse(env, { error: "not_found" }, 404);
     }
 
     const uploadMatch = url.pathname.match(/^\/([a-zA-Z0-9_-]+)\/upload\/([a-zA-Z0-9_.\-]+)$/);
