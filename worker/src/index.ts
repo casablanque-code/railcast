@@ -1,6 +1,7 @@
 export interface Env {
   DB: D1Database;
   BUILDS: R2Bucket;
+  PUBLIC_FILE_BASE_URL: string;
 }
 
 interface VersionRow {
@@ -89,12 +90,145 @@ async function handleUpload(
   }
 
   const fileKey = `${appId}/${filename}`;
-  await env.BUILDS.put(fileKey, request.body);
+  const obj = await env.BUILDS.put(fileKey, request.body);
 
-  return new Response(JSON.stringify({ file_key: fileKey }), {
-    status: 200,
-    headers: { "Content-Type": "application/json" },
-  });
+  return new Response(
+    JSON.stringify({ file_key: fileKey, file_size: obj?.size ?? null }),
+    {
+      status: 200,
+      headers: { "Content-Type": "application/json" },
+    }
+  );
+}
+
+interface CreateVersionBody {
+  version?: string;
+  build_number?: number;
+  channel?: string;
+  file_key?: string;
+  file_size?: number;
+  sha256?: string;
+  signature?: string;
+  release_notes?: string;
+}
+
+async function requireAppOwnership(
+  request: Request,
+  env: Env,
+  appId: string
+): Promise<{ ok: true } | { ok: false; response: Response }> {
+  const authHeader = request.headers.get("Authorization") ?? "";
+  const token = authHeader.replace("Bearer ", "");
+  if (!token) {
+    return { ok: false, response: new Response("Unauthorized", { status: 401 }) };
+  }
+
+  const tokenRow = await env.DB.prepare(
+    `SELECT user_id FROM api_tokens WHERE token = ?`
+  )
+    .bind(token)
+    .first<{ user_id: string }>();
+
+  if (!tokenRow) {
+    return { ok: false, response: new Response("Unauthorized", { status: 401 }) };
+  }
+
+  const appRow = await env.DB.prepare(
+    `SELECT owner_user_id FROM apps WHERE id = ?`
+  )
+    .bind(appId)
+    .first<{ owner_user_id: string }>();
+
+  if (!appRow || appRow.owner_user_id !== tokenRow.user_id) {
+    return { ok: false, response: new Response("Forbidden", { status: 403 }) };
+  }
+
+  return { ok: true };
+}
+
+async function handleCreateVersion(
+  request: Request,
+  env: Env,
+  appId: string
+): Promise<Response> {
+  const auth = await requireAppOwnership(request, env, appId);
+  if (!auth.ok) return auth.response;
+
+  let body: CreateVersionBody;
+  try {
+    body = await request.json();
+  } catch {
+    return new Response("Invalid JSON body", { status: 400 });
+  }
+
+  const {
+    version,
+    build_number,
+    file_key,
+    file_size,
+    sha256,
+    signature,
+    release_notes,
+  } = body;
+  const channel = body.channel ?? "stable";
+
+  if (
+    !version ||
+    !build_number ||
+    !file_key ||
+    !file_size ||
+    !sha256 ||
+    !signature
+  ) {
+    return new Response(
+      "Missing required fields: version, build_number, file_key, file_size, sha256, signature",
+      { status: 400 }
+    );
+  }
+
+  // Make sure the referenced object actually exists in this app's namespace
+  // before we register a version pointing at it.
+  if (!file_key.startsWith(`${appId}/`)) {
+    return new Response("file_key does not belong to this app", { status: 400 });
+  }
+  const head = await env.BUILDS.head(file_key);
+  if (!head) {
+    return new Response("file_key not found in storage — upload first", {
+      status: 400,
+    });
+  }
+
+  const createdAt = Math.floor(Date.now() / 1000);
+
+  await env.DB.prepare(
+    `INSERT INTO versions
+      (app_id, channel, version, build_number, file_key, file_size, sha256, signature, release_notes, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+  )
+    .bind(
+      appId,
+      channel,
+      version,
+      build_number,
+      file_key,
+      file_size,
+      sha256,
+      signature,
+      release_notes ?? null,
+      createdAt
+    )
+    .run();
+
+  return new Response(
+    JSON.stringify({
+      app_id: appId,
+      channel,
+      version,
+      build_number,
+      appcast_url: `/${appId}/appcast.xml?channel=${encodeURIComponent(channel)}`,
+    }),
+    { status: 201, headers: { "Content-Type": "application/json" } }
+  );
 }
 
 async function handleAppcast(request: Request, env: Env, appId: string): Promise<Response> {
@@ -115,8 +249,7 @@ async function handleAppcast(request: Request, env: Env, appId: string): Promise
     return new Response("Not found", { status: 404 });
   }
 
-  const fileBaseUrl = `https://pub-PLACEHOLDER.r2.dev`;
-  const xml = renderAppcast(appId, results, fileBaseUrl);
+  const xml = renderAppcast(appId, results, env.PUBLIC_FILE_BASE_URL);
 
   return new Response(xml, {
     status: 200,
@@ -143,6 +276,12 @@ export default {
     if (appcastMatch && request.method === "GET") {
       const [, appId] = appcastMatch;
       return handleAppcast(request, env, appId);
+    }
+
+    const versionsMatch = url.pathname.match(/^\/([a-zA-Z0-9_-]+)\/versions$/);
+    if (versionsMatch && request.method === "POST") {
+      const [, appId] = versionsMatch;
+      return handleCreateVersion(request, env, appId);
     }
 
     return new Response("Railcast API is alive", { status: 200 });

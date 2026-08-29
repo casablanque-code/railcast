@@ -17,6 +17,8 @@ func main() {
 	switch os.Args[1] {
 	case "keygen":
 		cmdKeygen()
+	case "publish":
+		cmdPublish(os.Args[2:])
 	default:
 		fmt.Printf("unknown command: %s\n", os.Args[1])
 		os.Exit(1)
