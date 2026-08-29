@@ -17,6 +17,6 @@ bucket_name = "railcast-builds"
 
 [vars]
 PUBLIC_FILE_BASE_URL = "https://dl.railcast.casablanque.com"
-# Origin of the Next.js dashboard (Cloudflare Pages) — used for CORS and the
+# Origin of the Next.js dashboard (its own Worker, see dashboard/wrangler.toml) — used for CORS and the
 # post-login redirect. Update if you deploy the dashboard elsewhere.
 CORS_ORIGIN = "https://app.railcast.casablanque.com"

@@ -23,7 +23,7 @@ Sparkle is a great free auto-update library, but it deliberately hosts nothing: 
 
 - **`worker/`** — Cloudflare Worker (TypeScript). Serves appcast.xml, accepts file uploads, magic-link auth, JSON API for the dashboard.
 - **`cli/`** — Go CLI (`railcast`). Signing key generation, version publishing.
-- **`dashboard/`** — Next.js dashboard (static export, deployed to Cloudflare Pages). Talks to the Worker's `/api/*` JSON endpoints over the shared `.railcast.casablanque.com` cookie domain.
+- **`dashboard/`** — Next.js dashboard (static export, deployed as a second Worker serving static assets — no Pages project). Talks to the API Worker's `/api/*` JSON endpoints over the shared `.railcast.casablanque.com` cookie domain.
 
 ## Quickstart
 
@@ -152,7 +152,14 @@ cp .env.example .env.local   # point NEXT_PUBLIC_API_BASE at your Worker
 npm run dev
 ```
 
-Deployed as a Cloudflare Pages static export (`npm run build` → publish the `out/` directory), on a subdomain that shares the `.railcast.casablanque.com` cookie domain with the Worker (currently configured as `app.railcast.casablanque.com` — see `CORS_ORIGIN` in `worker/wrangler.toml`, update both together if you rename it).
+Deployed as its own Worker (`dashboard/wrangler.toml`) using [Workers static assets](https://developers.cloudflare.com/workers/static-assets/) — `next build` produces `out/`, which `wrangler deploy` uploads directly, no Pages project involved:
+
+```bash
+cd dashboard
+npm run deploy   # = next build && wrangler deploy
+```
+
+It's on a subdomain that shares the `.railcast.casablanque.com` cookie domain with the API Worker (currently `app.railcast.casablanque.com` — see the `routes` entry in `dashboard/wrangler.toml` and `CORS_ORIGIN` in `worker/wrangler.toml`; update all three together if you rename it).
 
 ## Testing
 
@@ -166,7 +173,7 @@ cd cli && go build ./... && go vet ./... && go test ./...
 
 ## CI/CD
 
-- **`.github/workflows/test.yml`** — runs on every push/PR: Worker typecheck + vitest, CLI build/vet/test. No deploy step — Cloudflare's own Git integration deploys the Worker (and can deploy Pages) automatically on push to `main`.
+- **`.github/workflows/test.yml`** — runs on every push/PR: Worker typecheck + vitest, CLI build/vet/test. No deploy step — both Workers (`railcast-api` and `railcast-dashboard`) are connected via [Workers Builds](https://developers.cloudflare.com/workers/ci-cd/builds/) (Cloudflare's own git integration) and deploy automatically on push to `main`; each Worker needs its **Root directory** set correctly in its Workers Builds settings (`worker` and `dashboard` respectively) since this is a monorepo.
 - **`.github/workflows/release.yml`** — on any `vX.Y.Z` tag push: cross-compiles the CLI for macOS (amd64/arm64), Linux (amd64/arm64), and Windows (amd64), and publishes a GitHub Release with the binaries + `sha256` checksums and an auto-generated changelog.
 
 To cut a release:
