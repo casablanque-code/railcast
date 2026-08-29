@@ -2,6 +2,10 @@ name = "railcast-api"
 main = "src/index.ts"
 compatibility_date = "2026-08-01"
 
+routes = [
+  { pattern = "railcast.casablanque.com", custom_domain = true }
+]
+
 [[d1_databases]]
 binding = "DB"
 database_name = "railcast"
@@ -12,5 +16,4 @@ binding = "BUILDS"
 bucket_name = "railcast-builds"
 
 [vars]
-# TODO: заменить на реальный публичный R2 dev URL или кастомный домен раздачи
-PUBLIC_FILE_BASE_URL = "https://pub-PLACEHOLDER.r2.dev"
+PUBLIC_FILE_BASE_URL = "https://dl.railcast.casablanque.com"
