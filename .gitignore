@@ -3,3 +3,4 @@ node_modules/
 *.key
 dist/
 railcast
+.dev.vars

@@ -134,20 +134,23 @@ func loadPrivateKey(path string) (ed25519.PrivateKey, error) {
 	if err != nil {
 		return nil, err
 	}
-	// keygen prints both keys with labels; support either a bare base64
-	// blob (one line) or the full keygen output (grab the last non-empty line).
-	line := strings.TrimSpace(string(raw))
-	if idx := strings.LastIndex(line, "\n"); idx != -1 {
-		line = strings.TrimSpace(line[idx+1:])
+
+	lines := strings.Split(string(raw), "\n")
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		decoded, err := base64.StdEncoding.DecodeString(line)
+		if err != nil {
+			continue // не base64 — просто текст пояснения, пропускаем
+		}
+		if len(decoded) == ed25519.PrivateKeySize {
+			return ed25519.PrivateKey(decoded), nil
+		}
 	}
-	decoded, err := base64.StdEncoding.DecodeString(line)
-	if err != nil {
-		return nil, fmt.Errorf("key file does not contain a valid base64 ed25519 private key: %w", err)
-	}
-	if len(decoded) != ed25519.PrivateKeySize {
-		return nil, fmt.Errorf("unexpected key length %d (want %d) — did you point --key at the private key, not the public one?", len(decoded), ed25519.PrivateKeySize)
-	}
-	return ed25519.PrivateKey(decoded), nil
+
+	return nil, fmt.Errorf("no valid ed25519 private key (base64, %d bytes) found in %s", ed25519.PrivateKeySize, path)
 }
 
 func doUpload(baseURL, token, appID, filename string, data []byte) (*uploadResponse, error) {
