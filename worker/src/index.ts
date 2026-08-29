@@ -293,12 +293,33 @@ async function handleDashboard(request: Request, env: Env): Promise<Response> {
     .join("");
 
   const tokensHtml = (tokens ?? [])
-    .map((t) => `<tr><td><code>${escapeXml(t.token)}</code></td></tr>`)
+    .map(
+      (t) =>
+        `<tr><td class="muted">Токен создан ${new Date(t.created_at * 1000).toLocaleString("ru-RU")}</td></tr>`
+    )
     .join("");
 
   const body = `
     <h1>Railcast — ${escapeXml(user.email)}</h1>
     <p class="muted"><a href="/logout">Выйти</a></p>
+
+    <div id="new-token-banner" style="display:none; background:#fef9c3; border:1px solid #eab308; padding:12px; border-radius:6px; margin:12px 0;">
+      <strong>Токен скопирован в буфер обмена — сохрани его сейчас, больше он не покажется:</strong>
+      <div><code id="new-token-value" style="word-break:break-all;"></code></div>
+      <p id="copy-status" class="muted" style="margin:4px 0 0;"></p>
+    </div>
+    <script>
+      const hash = window.location.hash;
+      if (hash.startsWith('#new_token=')) {
+        const token = decodeURIComponent(hash.slice(11));
+        document.getElementById('new-token-value').textContent = token;
+        document.getElementById('new-token-banner').style.display = 'block';
+        navigator.clipboard.writeText(token)
+          .then(() => { document.getElementById('copy-status').textContent = 'Скопировано в буфер обмена.'; })
+          .catch(() => { document.getElementById('copy-status').textContent = 'Не удалось скопировать автоматически — скопируй вручную.'; });
+        history.replaceState(null, '', window.location.pathname);
+      }
+    </script>
 
     <h2>Твои приложения</h2>
     <table>
@@ -362,7 +383,10 @@ async function handleCreateToken(request: Request, env: Env): Promise<Response> 
     .bind(token, user.id)
     .run();
 
-  return new Response(null, { status: 302, headers: { Location: "/dashboard" } });
+  return new Response(null, {
+    status: 302,
+    headers: { Location: `/dashboard#new_token=${token}` },
+  });
 }
 
 // ---------- Upload / versions / appcast (CLI-facing API) ----------
