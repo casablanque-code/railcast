@@ -195,198 +195,13 @@ async function handleAuthVerify(request: Request, env: Env): Promise<Response> {
   });
 }
 
-function handleLogout(): Response {
+function handleLogout(env: Env): Response {
   return new Response(null, {
     status: 302,
     headers: {
-      Location: "/login",
+      Location: `${env.CORS_ORIGIN}/`,
       "Set-Cookie": "session=; Domain=.railcast.casablanque.com; Path=/; HttpOnly; Max-Age=0",
     },
-  });
-}
-
-// ---------- Dashboard HTML ----------
-
-function htmlPage(title: string, body: string): string {
-  return `<!DOCTYPE html>
-<html lang="ru">
-<head>
-  <meta charset="utf-8" />
-  <title>${escapeXml(title)}</title>
-  <style>
-    body { font-family: -apple-system, system-ui, sans-serif; max-width: 720px; margin: 40px auto; padding: 0 16px; color: #1a1a1a; }
-    h1 { font-size: 20px; }
-    table { width: 100%; border-collapse: collapse; margin: 16px 0; }
-    th, td { text-align: left; padding: 8px; border-bottom: 1px solid #eee; font-size: 14px; }
-    code { background: #f4f4f4; padding: 2px 6px; border-radius: 4px; font-size: 13px; }
-    input, button { font-size: 14px; padding: 8px; }
-    .muted { color: #777; font-size: 13px; }
-    a { color: #2563eb; }
-  </style>
-</head>
-<body>
-${body}
-</body>
-</html>`;
-}
-
-function handleLoginPage(): Response {
-  const body = `
-    <h1>Войти в Railcast</h1>
-    <form id="f">
-      <input name="email" type="email" placeholder="you@example.com" required />
-      <button type="submit">Прислать ссылку для входа</button>
-    </form>
-    <p id="msg" class="muted"></p>
-    <script>
-      document.getElementById('f').addEventListener('submit', async (e) => {
-        e.preventDefault();
-        const email = e.target.email.value;
-        document.getElementById('msg').textContent = 'Отправляю...';
-        const resp = await fetch('/auth/request', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ email }),
-        });
-        const data = await resp.json();
-        document.getElementById('msg').textContent = resp.ok
-          ? 'Проверь почту — прислали ссылку для входа.'
-          : 'Ошибка: ' + (data.message || resp.status);
-      });
-    </script>
-  `;
-  return new Response(htmlPage("Войти — Railcast", body), {
-    status: 200,
-    headers: { "Content-Type": "text/html; charset=utf-8" },
-  });
-}
-
-async function handleDashboard(request: Request, env: Env): Promise<Response> {
-  const user = await getSessionUser(request, env);
-  if (!user) {
-    return new Response(null, { status: 302, headers: { Location: "/login" } });
-  }
-
-  const { results: apps } = await env.DB.prepare(
-    `SELECT id, signing_public_key FROM apps WHERE owner_user_id = ?`
-  )
-    .bind(user.id)
-    .all<{ id: string; signing_public_key: string }>();
-
-  const { results: tokens } = await env.DB.prepare(
-    `SELECT token, created_at FROM api_tokens WHERE user_id = ?`
-  )
-    .bind(user.id)
-    .all<{ token: string; created_at: number }>();
-
-  const url = new URL(request.url);
-  const origin = url.origin;
-
-  const appsHtml = (apps ?? [])
-    .map(
-      (a) => `<tr>
-        <td><code>${escapeXml(a.id)}</code></td>
-        <td><a href="${origin}/${escapeXml(a.id)}/appcast.xml" target="_blank">${origin}/${escapeXml(
-        a.id
-      )}/appcast.xml</a></td>
-      </tr>`
-    )
-    .join("");
-
-  const tokensHtml = (tokens ?? [])
-    .map(
-      (t) =>
-        `<tr><td class="muted">Токен создан ${new Date(t.created_at * 1000).toLocaleString("ru-RU")}</td></tr>`
-    )
-    .join("");
-
-  const body = `
-    <h1>Railcast — ${escapeXml(user.email)}</h1>
-    <p class="muted"><a href="/logout">Выйти</a></p>
-
-    <div id="new-token-banner" style="display:none; background:#fef9c3; border:1px solid #eab308; padding:12px; border-radius:6px; margin:12px 0;">
-      <strong>Токен скопирован в буфер обмена — сохрани его сейчас, больше он не покажется:</strong>
-      <div><code id="new-token-value" style="word-break:break-all;"></code></div>
-      <p id="copy-status" class="muted" style="margin:4px 0 0;"></p>
-    </div>
-    <script>
-      const hash = window.location.hash;
-      if (hash.startsWith('#new_token=')) {
-        const token = decodeURIComponent(hash.slice(11));
-        document.getElementById('new-token-value').textContent = token;
-        document.getElementById('new-token-banner').style.display = 'block';
-        navigator.clipboard.writeText(token)
-          .then(() => { document.getElementById('copy-status').textContent = 'Скопировано в буфер обмена.'; })
-          .catch(() => { document.getElementById('copy-status').textContent = 'Не удалось скопировать автоматически — скопируй вручную.'; });
-        history.replaceState(null, '', window.location.pathname);
-      }
-    </script>
-
-    <h2>Твои приложения</h2>
-    <table>
-      <tr><th>App ID</th><th>Feed URL</th></tr>
-      ${appsHtml || '<tr><td colspan="2" class="muted">Пока нет приложений</td></tr>'}
-    </table>
-
-    <form method="POST" action="/apps">
-      <input name="app_id" placeholder="app-id (латиница, цифры, дефис)" required />
-      <input name="public_key" placeholder="публичный ключ (из railcast keygen)" required style="width:340px" />
-      <button type="submit">Создать приложение</button>
-    </form>
-
-    <h2>API-токены (для CLI)</h2>
-    <table>
-      <tr><th>Токен</th></tr>
-      ${tokensHtml || '<tr><td class="muted">Пока нет токенов</td></tr>'}
-    </table>
-
-    <form method="POST" action="/tokens">
-      <button type="submit">Сгенерировать новый токен</button>
-    </form>
-  `;
-
-  return new Response(htmlPage("Railcast Dashboard", body), {
-    status: 200,
-    headers: { "Content-Type": "text/html; charset=utf-8" },
-  });
-}
-
-async function handleCreateApp(request: Request, env: Env): Promise<Response> {
-  const user = await getSessionUser(request, env);
-  if (!user) return new Response(null, { status: 302, headers: { Location: "/login" } });
-
-  const form = await request.formData();
-  const appId = String(form.get("app_id") ?? "").trim();
-  const publicKey = String(form.get("public_key") ?? "").trim();
-
-  if (!/^[a-zA-Z0-9_-]+$/.test(appId) || !publicKey) {
-    return new Response("Invalid app_id or public_key", { status: 400 });
-  }
-
-  await env.DB.prepare(
-    `INSERT INTO apps (id, owner_email, owner_user_id, signing_public_key, created_at)
-     VALUES (?, ?, ?, ?, unixepoch())`
-  )
-    .bind(appId, user.email, user.id, publicKey)
-    .run();
-
-  return new Response(null, { status: 302, headers: { Location: "/dashboard" } });
-}
-
-async function handleCreateToken(request: Request, env: Env): Promise<Response> {
-  const user = await getSessionUser(request, env);
-  if (!user) return new Response(null, { status: 302, headers: { Location: "/login" } });
-
-  const token = randomToken();
-  await env.DB.prepare(
-    `INSERT INTO api_tokens (token, user_id, created_at) VALUES (?, ?, unixepoch())`
-  )
-    .bind(token, user.id)
-    .run();
-
-  return new Response(null, {
-    status: 302,
-    headers: { Location: `/dashboard#new_token=${token}` },
   });
 }
 
@@ -679,19 +494,16 @@ export default {
     const url = new URL(request.url);
 
     if (url.pathname === "/login" && request.method === "GET") {
-      return handleLoginPage();
+      return new Response(null, { status: 302, headers: { Location: `${env.CORS_ORIGIN}/` } });
     }
     if (url.pathname === "/dashboard" && request.method === "GET") {
-      return handleDashboard(request, env);
-    }
-    if (url.pathname === "/apps" && request.method === "POST") {
-      return handleCreateApp(request, env);
-    }
-    if (url.pathname === "/tokens" && request.method === "POST") {
-      return handleCreateToken(request, env);
+      return new Response(null, {
+        status: 302,
+        headers: { Location: `${env.CORS_ORIGIN}/dashboard` },
+      });
     }
     if (url.pathname === "/logout" && request.method === "GET") {
-      return handleLogout();
+      return handleLogout(env);
     }
     if (url.pathname === "/auth/request" && request.method === "POST") {
       return handleAuthRequest(request, env);
