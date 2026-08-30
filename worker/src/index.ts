@@ -89,6 +89,50 @@ async function getSessionUser(
   return row ?? null;
 }
 
+// For endpoints the CLI calls directly with an API token (no browser
+// session available) — resolves the same way /:appId/upload and
+// /:appId/versions already do.
+async function getUserFromBearerToken(
+  request: Request,
+  env: Env
+): Promise<{ id: string; email: string } | null> {
+  const authHeader = request.headers.get("Authorization") ?? "";
+  const token = authHeader.replace("Bearer ", "");
+  if (!token) return null;
+
+  const row = await env.DB.prepare(
+    `SELECT users.id as id, users.email as email
+     FROM api_tokens
+     JOIN users ON users.id = api_tokens.user_id
+     WHERE api_tokens.token = ?`
+  )
+    .bind(token)
+    .first<{ id: string; email: string }>();
+
+  return row ?? null;
+}
+
+// Session cookie (dashboard) OR bearer token (CLI) — either identifies the user.
+async function getAuthenticatedUser(
+  request: Request,
+  env: Env
+): Promise<{ id: string; email: string } | null> {
+  const sessionUser = await getSessionUser(request, env);
+  if (sessionUser) return sessionUser;
+  return getUserFromBearerToken(request, env);
+}
+
+// Early-access gate: until billing exists, access is granted manually
+// (see users.access_granted). Once a payment processor is wired up, only
+// what *sets* this flag changes (a webhook instead of a manual UPDATE) —
+// every call site that checks it stays the same.
+async function hasActiveAccess(userId: string, env: Env): Promise<boolean> {
+  const row = await env.DB.prepare(`SELECT access_granted FROM users WHERE id = ?`)
+    .bind(userId)
+    .first<{ access_granted: number }>();
+  return row?.access_granted === 1;
+}
+
 async function sendMagicLinkEmail(env: Env, email: string, link: string): Promise<void> {
   const resp = await fetch("https://api.resend.com/emails", {
     method: "POST",
@@ -278,8 +322,18 @@ async function handleApiListApps(request: Request, env: Env): Promise<Response> 
 }
 
 async function handleApiCreateApp(request: Request, env: Env): Promise<Response> {
-  const user = await getSessionUser(request, env);
+  const user = await getAuthenticatedUser(request, env);
   if (!user) return jsonResponse({ error: "unauthorized" }, 401);
+
+  if (!(await hasActiveAccess(user.id, env))) {
+    return jsonResponse(
+      {
+        error: "access_not_granted",
+        message: "Your account doesn't have access yet — request early access at railcast.casablanque.com",
+      },
+      402
+    );
+  }
 
   let body: { id?: string; signing_public_key?: string };
   try {

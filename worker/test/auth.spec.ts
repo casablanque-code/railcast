@@ -92,12 +92,14 @@ describe("GET /api/me", () => {
 });
 
 describe("POST /api/apps", () => {
-  async function loggedInCookie(): Promise<string> {
+  async function loggedInCookie(accessGranted = 1): Promise<string> {
     const userId = crypto.randomUUID();
     const sessionId = "session-" + crypto.randomUUID();
     const now = Math.floor(Date.now() / 1000);
-    await env.DB.prepare(`INSERT INTO users (id, email, created_at) VALUES (?, ?, ?)`)
-      .bind(userId, `${crypto.randomUUID()}@example.com`, now)
+    await env.DB.prepare(
+      `INSERT INTO users (id, email, created_at, access_granted) VALUES (?, ?, ?, ?)`
+    )
+      .bind(userId, `${crypto.randomUUID()}@example.com`, now, accessGranted)
       .run();
     await env.DB.prepare(
       `INSERT INTO sessions (id, user_id, expires_at, created_at) VALUES (?, ?, ?, ?)`
@@ -131,5 +133,36 @@ describe("POST /api/apps", () => {
 
     const second = await create();
     expect(second.status).toBe(409);
+  });
+
+  it("blocks app creation for a logged-in user without granted access", async () => {
+    const cookie = await loggedInCookie(0);
+    const res = await SELF.fetch("https://railcast.test/api/apps", {
+      method: "POST",
+      headers: { Cookie: cookie, "Content-Type": "application/json" },
+      body: JSON.stringify({ id: "gated-app", signing_public_key: "pubkey" }),
+    });
+    expect(res.status).toBe(402);
+  });
+
+  it("accepts a bearer API token in place of a session cookie", async () => {
+    const userId = crypto.randomUUID();
+    const token = "cli-token-" + crypto.randomUUID();
+    const now = Math.floor(Date.now() / 1000);
+    await env.DB.prepare(
+      `INSERT INTO users (id, email, created_at, access_granted) VALUES (?, ?, ?, 1)`
+    )
+      .bind(userId, `${crypto.randomUUID()}@example.com`, now)
+      .run();
+    await env.DB.prepare(`INSERT INTO api_tokens (token, user_id, created_at) VALUES (?, ?, ?)`)
+      .bind(token, userId, now)
+      .run();
+
+    const res = await SELF.fetch("https://railcast.test/api/apps", {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ id: "cli-created-app", signing_public_key: "pubkey" }),
+    });
+    expect(res.status).toBe(201);
   });
 });

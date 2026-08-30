@@ -21,6 +21,8 @@ func main() {
 	switch os.Args[1] {
 	case "keygen":
 		cmdKeygen()
+	case "init":
+		cmdInit(os.Args[2:])
 	case "publish":
 		cmdPublish(os.Args[2:])
 	case "version", "--version", "-v":
