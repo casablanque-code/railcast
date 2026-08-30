@@ -1,4 +1,7 @@
-const API_BASE = process.env.NEXT_PUBLIC_API_BASE ?? "https://railcast.casablanque.com";
+// Same-origin deployment (dashboard is served by the same Worker as the
+// API) — relative paths by default. Override for local `next dev` against
+// a deployed Worker.
+const API_BASE = process.env.NEXT_PUBLIC_API_BASE ?? "";
 
 export class ApiError extends Error {
   status: number;

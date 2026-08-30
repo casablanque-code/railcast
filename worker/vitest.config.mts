@@ -7,7 +7,6 @@ const workersOptions = {
   miniflare: {
     bindings: {
       PUBLIC_FILE_BASE_URL: "https://dl.test.local",
-      CORS_ORIGIN: "https://app.test.local",
       RESEND_API_KEY: "test-resend-key",
     },
   },

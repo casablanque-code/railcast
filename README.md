@@ -23,7 +23,7 @@ Sparkle is a great free auto-update library, but it deliberately hosts nothing: 
 
 - **`worker/`** — Cloudflare Worker (TypeScript). Serves appcast.xml, accepts file uploads, magic-link auth, JSON API for the dashboard.
 - **`cli/`** — Go CLI (`railcast`). Signing key generation, version publishing.
-- **`dashboard/`** — Next.js dashboard (static export, deployed as a second Worker serving static assets — no Pages project). Talks to the API Worker's `/api/*` JSON endpoints over the shared `.railcast.casablanque.com` cookie domain.
+- **`dashboard/`** — Next.js dashboard (static export). Built output (`out/`) is served by the *same* Worker as the API, via [Workers static assets](https://developers.cloudflare.com/workers/static-assets/) — one Worker, one domain, no CORS, no cross-subdomain cookies.
 
 ## Quickstart
 
@@ -152,14 +152,16 @@ cp .env.example .env.local   # point NEXT_PUBLIC_API_BASE at your Worker
 npm run dev
 ```
 
-Deployed as its own Worker (`dashboard/wrangler.toml`) using [Workers static assets](https://developers.cloudflare.com/workers/static-assets/) — `next build` produces `out/`, which `wrangler deploy` uploads directly, no Pages project involved:
+The dashboard has no deploy step of its own — it's built, then served as static assets by the `railcast-api` Worker (see `[assets]` in `worker/wrangler.toml`, pointing at `../dashboard/out`). Deploy order matters:
 
 ```bash
-cd dashboard
-npm run deploy   # = next build && wrangler deploy
+cd dashboard && npm ci && npm run build   # produces dashboard/out
+cd ../worker && npx wrangler deploy        # picks up ../dashboard/out automatically
 ```
 
-It's on a subdomain that shares the `.railcast.casablanque.com` cookie domain with the API Worker (currently `app.railcast.casablanque.com` — see the `routes` entry in `dashboard/wrangler.toml` and `CORS_ORIGIN` in `worker/wrangler.toml`; update all three together if you rename it).
+Requests are matched against the static files first (`/`, `/dashboard`, `/_next/*`, ...); anything that doesn't match a file falls through to the Worker script (`/api/*`, `/auth/*`, `/:appId/appcast.xml`, uploads). Same origin throughout — no CORS, no cookie `Domain` trickery.
+
+If you're using [Workers Builds](https://developers.cloudflare.com/workers/ci-cd/builds/) for auto-deploy on push, set the **Root directory** to the repo root (not `worker/`) and the **Build command** to `cd dashboard && npm ci && npm run build`, so the dashboard is built before Wrangler looks for `../dashboard/out`; the **Deploy command** stays `npm --prefix worker ci && npx wrangler deploy --config worker/wrangler.toml`.
 
 ## Testing
 
@@ -173,7 +175,7 @@ cd cli && go build ./... && go vet ./... && go test ./...
 
 ## CI/CD
 
-- **`.github/workflows/test.yml`** — runs on every push/PR: Worker typecheck + vitest, CLI build/vet/test. No deploy step — both Workers (`railcast-api` and `railcast-dashboard`) are connected via [Workers Builds](https://developers.cloudflare.com/workers/ci-cd/builds/) (Cloudflare's own git integration) and deploy automatically on push to `main`; each Worker needs its **Root directory** set correctly in its Workers Builds settings (`worker` and `dashboard` respectively) since this is a monorepo.
+- **`.github/workflows/test.yml`** — runs on every push/PR: Worker typecheck + vitest, CLI build/vet/test. No deploy step — `railcast-api` (which now also serves the dashboard) is connected via [Workers Builds](https://developers.cloudflare.com/workers/ci-cd/builds/) (Cloudflare's own git integration) and deploys automatically on push to `main`; see the Root/Build/Deploy command settings above.
 - **`.github/workflows/release.yml`** — on any `vX.Y.Z` tag push: cross-compiles the CLI for macOS (amd64/arm64), Linux (amd64/arm64), and Windows (amd64), and publishes a GitHub Release with the binaries + `sha256` checksums and an auto-generated changelog.
 
 To cut a release:
