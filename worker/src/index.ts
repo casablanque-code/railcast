@@ -481,11 +481,6 @@ export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
 
-    if (url.pathname === "/login" && request.method === "GET") {
-      // Old bookmarked path — the login page now lives at "/" (served
-      // directly as a static asset, this route is just a compat redirect).
-      return new Response(null, { status: 302, headers: { Location: "/" } });
-    }
     if (url.pathname === "/logout" && request.method === "GET") {
       return handleLogout();
     }
