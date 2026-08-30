@@ -12,6 +12,7 @@ const DDL = [
   `CREATE TABLE magic_links (token TEXT PRIMARY KEY, email TEXT NOT NULL, expires_at INTEGER NOT NULL, used INTEGER NOT NULL DEFAULT 0);`,
   `CREATE TABLE api_tokens (token TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id), created_at INTEGER NOT NULL);`,
   `CREATE TABLE sessions (id TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id), expires_at INTEGER NOT NULL, created_at INTEGER NOT NULL);`,
+  `CREATE TABLE waitlist (id TEXT PRIMARY KEY, email TEXT NOT NULL, created_at INTEGER NOT NULL);`,
 ].join("\n");
 
 await env.DB.exec(DDL);

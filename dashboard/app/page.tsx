@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import { EarlyAccessForm } from "./EarlyAccessForm";
 
 export const metadata: Metadata = {
   title: "Railcast — the backend Sparkle needs",
@@ -17,9 +18,7 @@ export default function LandingPage() {
           Push a build, get back a signed, hosted <span className="font-mono">appcast.xml</span>.
           Nothing to run, nothing to keep alive.
         </p>
-        <a href="/login" className="btn mt-6">
-          Get early access
-        </a>
+        <EarlyAccessForm buttonLabel="Get early access" />
       </section>
 
       <section className="border-t border-line py-10">
@@ -78,13 +77,16 @@ export default function LandingPage() {
       <section className="border-t border-line py-10">
         <h2 className="text-xs font-semibold uppercase tracking-wide text-ink/50">Pricing</h2>
         <p className="mt-4 text-sm text-ink/70">Early access. Pricing announced soon.</p>
-        <a href="/login" className="btn-secondary mt-5">
-          Request access
-        </a>
+        <EarlyAccessForm buttonLabel="Request access" />
       </section>
 
       <footer className="border-t border-line py-8 text-xs text-ink/40">
-        <p>In active development. casablanque@proton.me</p>
+        <p>
+          In active development. casablanque@proton.me ·{" "}
+          <a href="/login" className="hover:text-ink/70 hover:underline">
+            Already have access? Log in
+          </a>
+        </p>
       </footer>
     </main>
   );

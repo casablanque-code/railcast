@@ -4,7 +4,7 @@ import { FormEvent, useEffect, useState } from "react";
 import { api, ApiError, type App, type Me, type TokenPreview } from "@/lib/api";
 
 function formatDate(unixSeconds: number): string {
-  return new Date(unixSeconds * 1000).toLocaleString("ru-RU", {
+  return new Date(unixSeconds * 1000).toLocaleString("en-US", {
     day: "2-digit",
     month: "short",
     hour: "2-digit",
@@ -45,7 +45,7 @@ export default function DashboardPage() {
           window.location.href = "/";
           return;
         }
-        setLoadError("Не удалось связаться с API. Проверь, что Worker задеплоен и доступен.");
+        setLoadError("Couldn't reach the API. Check that the Worker is deployed and reachable.");
       });
   }, []);
 
@@ -59,7 +59,7 @@ export default function DashboardPage() {
       setPublicKey("");
       await refresh();
     } catch (err) {
-      setAppError(err instanceof ApiError ? err.message : "Не удалось создать приложение");
+      setAppError(err instanceof ApiError ? err.message : "Couldn't create the app");
     } finally {
       setCreatingApp(false);
     }
@@ -74,7 +74,7 @@ export default function DashboardPage() {
       navigator.clipboard?.writeText(token).catch(() => {});
       await refresh();
     } catch (err) {
-      setTokenError(err instanceof ApiError ? err.message : "Не удалось создать токен");
+      setTokenError(err instanceof ApiError ? err.message : "Couldn't create the token");
     } finally {
       setCreatingToken(false);
     }
@@ -91,7 +91,7 @@ export default function DashboardPage() {
   if (!me) {
     return (
       <main>
-        <p className="text-sm text-ink/50">Загрузка…</p>
+        <p className="text-sm text-ink/50">Loading…</p>
       </main>
     );
   }
@@ -100,22 +100,20 @@ export default function DashboardPage() {
     <main className="space-y-10">
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-xl font-semibold tracking-tight">Дашборд</h1>
+          <h1 className="text-xl font-semibold tracking-tight">Dashboard</h1>
           <p className="mt-1 text-sm text-ink/60">{me.email}</p>
         </div>
         <a href={`${api.base}/logout`} className="btn-secondary text-sm">
-          Выйти
+          Log out
         </a>
       </div>
 
       <section>
-        <h2 className="mb-3 text-sm font-semibold uppercase tracking-wide text-ink/50">
-          Приложения
-        </h2>
+        <h2 className="mb-3 text-sm font-semibold uppercase tracking-wide text-ink/50">Apps</h2>
 
         <div className="card mb-4 space-y-3">
           {apps && apps.length === 0 && (
-            <p className="text-sm text-ink/50">Пока нет приложений — создай первое ниже.</p>
+            <p className="text-sm text-ink/50">No apps yet — create your first one below.</p>
           )}
           {apps?.map((app) => (
             <div
@@ -134,14 +132,14 @@ export default function DashboardPage() {
                 rel="noreferrer"
                 className="code-chip hover:border-accent hover:text-accent"
               >
-                открыть фид
+                open feed
               </a>
             </div>
           ))}
         </div>
 
         <form onSubmit={onCreateApp} className="card space-y-4">
-          <p className="text-sm font-medium">Новое приложение</p>
+          <p className="text-sm font-medium">New app</p>
           <div className="grid gap-4 sm:grid-cols-2">
             <div>
               <label className="label" htmlFor="app-id">
@@ -159,7 +157,7 @@ export default function DashboardPage() {
             </div>
             <div>
               <label className="label" htmlFor="public-key">
-                Публичный ключ (из railcast keygen)
+                Public key (from railcast keygen)
               </label>
               <input
                 id="public-key"
@@ -173,7 +171,7 @@ export default function DashboardPage() {
           </div>
           <div className="flex items-center gap-3">
             <button type="submit" className="btn" disabled={creatingApp}>
-              {creatingApp ? "Создаю…" : "Создать приложение"}
+              {creatingApp ? "Creating…" : "Create app"}
             </button>
             {appError && <p className="text-sm text-red-600">{appError}</p>}
           </div>
@@ -182,13 +180,13 @@ export default function DashboardPage() {
 
       <section>
         <h2 className="mb-3 text-sm font-semibold uppercase tracking-wide text-ink/50">
-          API-токены
+          API tokens
         </h2>
 
         {newToken && (
           <div className="card mb-4 border-accent/30 bg-accent-soft">
             <p className="text-sm font-medium text-ink">
-              Токен скопирован в буфер обмена — сохрани его сейчас, больше он не покажется:
+              Token copied to your clipboard — save it now, it won&apos;t be shown again:
             </p>
             <p className="mt-2 break-all font-mono text-sm text-ink">{newToken}</p>
           </div>
@@ -196,7 +194,7 @@ export default function DashboardPage() {
 
         <div className="card mb-4 space-y-3">
           {tokens && tokens.length === 0 && (
-            <p className="text-sm text-ink/50">Пока нет токенов.</p>
+            <p className="text-sm text-ink/50">No tokens yet.</p>
           )}
           {tokens?.map((t, i) => (
             <div
@@ -204,14 +202,14 @@ export default function DashboardPage() {
               className="flex items-center justify-between border-b border-line pb-3 text-sm last:border-0 last:pb-0"
             >
               <span className="code-chip">{t.preview}</span>
-              <span className="text-ink/50">создан {formatDate(t.created_at)}</span>
+              <span className="text-ink/50">created {formatDate(t.created_at)}</span>
             </div>
           ))}
         </div>
 
         <div className="flex items-center gap-3">
           <button className="btn-secondary" onClick={onCreateToken} disabled={creatingToken}>
-            {creatingToken ? "Создаю…" : "Сгенерировать новый токен"}
+            {creatingToken ? "Creating…" : "Generate new token"}
           </button>
           {tokenError && <p className="text-sm text-red-600">{tokenError}</p>}
         </div>

@@ -1,6 +1,26 @@
 import { SELF, env } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 
+describe("POST /api/waitlist", () => {
+  it("rejects a missing email without touching the email provider", async () => {
+    const res = await SELF.fetch("https://railcast.test/api/waitlist", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({}),
+    });
+    expect(res.status).toBe(400);
+  });
+
+  it("rejects invalid JSON", async () => {
+    const res = await SELF.fetch("https://railcast.test/api/waitlist", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: "not json",
+    });
+    expect(res.status).toBe(400);
+  });
+});
+
 describe("POST /auth/request", () => {
   it("rejects a missing email without touching the email provider", async () => {
     const res = await SELF.fetch("https://railcast.test/auth/request", {

@@ -99,14 +99,59 @@ async function sendMagicLinkEmail(env: Env, email: string, link: string): Promis
     body: JSON.stringify({
       from: "Railcast <onboarding@resend.dev>",
       to: [email],
-      subject: "Войти в Railcast",
-      html: `<p>Нажми, чтобы войти:</p><p><a href="${link}">${link}</a></p><p>Ссылка действует 15 минут.</p>`,
+      subject: "Log in to Railcast",
+      html: `<p>Click to log in:</p><p><a href="${link}">${link}</a></p><p>This link expires in 15 minutes.</p>`,
     }),
   });
   if (!resp.ok) {
     const text = await resp.text();
     throw new Error(`Resend API error (${resp.status}): ${text}`);
   }
+}
+
+async function sendWaitlistNotification(env: Env, email: string): Promise<void> {
+  const resp = await fetch("https://api.resend.com/emails", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${env.RESEND_API_KEY}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      from: "Railcast <onboarding@resend.dev>",
+      to: ["casablanque@proton.me"],
+      subject: "New early access request",
+      html: `<p>${escapeXml(email)} requested early access to Railcast.</p>`,
+    }),
+  });
+  if (!resp.ok) {
+    const text = await resp.text();
+    throw new Error(`Resend API error (${resp.status}): ${text}`);
+  }
+}
+
+async function handleWaitlistRequest(request: Request, env: Env): Promise<Response> {
+  let body: { email?: string };
+  try {
+    body = await request.json();
+  } catch {
+    return new Response("Invalid JSON", { status: 400 });
+  }
+
+  const email = body.email?.trim().toLowerCase();
+  if (!email || !email.includes("@")) {
+    return new Response("Valid email required", { status: 400 });
+  }
+
+  await env.DB.prepare(`INSERT INTO waitlist (id, email, created_at) VALUES (?, ?, unixepoch())`)
+    .bind(crypto.randomUUID(), email)
+    .run();
+
+  await sendWaitlistNotification(env, email);
+
+  return new Response(JSON.stringify({ ok: true, message: "Thanks — we'll be in touch" }), {
+    status: 200,
+    headers: { "Content-Type": "application/json" },
+  });
 }
 
 async function handleAuthRequest(request: Request, env: Env): Promise<Response> {
@@ -483,6 +528,9 @@ export default {
 
     if (url.pathname === "/logout" && request.method === "GET") {
       return handleLogout();
+    }
+    if (url.pathname === "/api/waitlist" && request.method === "POST") {
+      return handleWaitlistRequest(request, env);
     }
     if (url.pathname === "/auth/request" && request.method === "POST") {
       return handleAuthRequest(request, env);

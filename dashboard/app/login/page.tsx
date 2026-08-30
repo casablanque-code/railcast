@@ -19,26 +19,26 @@ export default function LoginPage() {
       setStatus("sent");
     } catch (err) {
       setStatus("error");
-      setError(err instanceof ApiError ? err.message : "Что-то пошло не так");
+      setError(err instanceof ApiError ? err.message : "Something went wrong");
     }
   }
 
   return (
     <main>
       <div className="mb-8">
-        <h1 className="text-xl font-semibold tracking-tight">Войти в Railcast</h1>
+        <h1 className="text-xl font-semibold tracking-tight">Log in to Railcast</h1>
         <p className="mt-1 text-sm text-ink/60">
-          Хостинг appcast-фидов и доставка апдейтов для Sparkle, WinSparkle и Velopack.
+          Hosted appcast feeds and update delivery for Sparkle, WinSparkle, and Velopack.
         </p>
       </div>
 
       <div className="card max-w-sm">
         {status === "sent" ? (
           <div className="text-sm">
-            <p className="font-medium text-ink">Проверь почту</p>
+            <p className="font-medium text-ink">Check your email</p>
             <p className="mt-1 text-ink/60">
-              Мы отправили ссылку для входа на <span className="font-mono">{email}</span>. Ссылка
-              действует 15 минут.
+              We sent a login link to <span className="font-mono">{email}</span>. It expires in
+              15 minutes.
             </p>
           </div>
         ) : (
@@ -58,7 +58,7 @@ export default function LoginPage() {
               />
             </div>
             <button type="submit" className="btn w-full" disabled={status === "sending"}>
-              {status === "sending" ? "Отправляю…" : "Прислать ссылку для входа"}
+              {status === "sending" ? "Sending…" : "Send login link"}
             </button>
             {status === "error" && <p className="text-sm text-red-600">{error}</p>}
           </form>
@@ -66,9 +66,9 @@ export default function LoginPage() {
       </div>
 
       <p className="mt-6 text-xs text-ink/40">
-        Уже есть ссылка на почте?{" "}
+        Already have a link in your inbox?{" "}
         <a className="text-accent hover:underline" href="/dashboard">
-          Перейти в дашборд
+          Go to the dashboard
         </a>
       </p>
     </main>
