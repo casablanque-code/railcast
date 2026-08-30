@@ -11,6 +11,20 @@ routes = [
 # Path is relative to this file, not the process cwd.
 directory = "../dashboard/out"
 not_found_handling = "404-page"
+# Without this, browser navigation requests (Sec-Fetch-Mode: navigate — e.g.
+# clicking the magic-link in an email, or opening an appcast.xml link in a
+# new tab) that don't match a static file get served the 404 page directly
+# and never reach the Worker script at all — that's the default since our
+# compatibility_date is past 2025-04-01. fetch()-based requests (the
+# dashboard's own API calls) were never affected, only real page loads.
+run_worker_first = [
+  "/auth/*",
+  "/api/*",
+  "/logout",
+  "/*/appcast.xml",
+  "/*/upload/*",
+  "/*/versions"
+]
 
 [[d1_databases]]
 binding = "DB"
