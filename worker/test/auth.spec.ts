@@ -91,6 +91,90 @@ describe("GET /api/me", () => {
   });
 });
 
+describe("API tokens", () => {
+  async function loggedInCookieAndUser(): Promise<{ cookie: string; userId: string }> {
+    const userId = crypto.randomUUID();
+    const sessionId = "session-" + crypto.randomUUID();
+    const now = Math.floor(Date.now() / 1000);
+    await env.DB.prepare(`INSERT INTO users (id, email, created_at) VALUES (?, ?, ?)`)
+      .bind(userId, `${crypto.randomUUID()}@example.com`, now)
+      .run();
+    await env.DB.prepare(
+      `INSERT INTO sessions (id, user_id, expires_at, created_at) VALUES (?, ?, ?, ?)`
+    )
+      .bind(sessionId, userId, now + 3600, now)
+      .run();
+    return { cookie: `session=${sessionId}`, userId };
+  }
+
+  it("returns an id alongside each token's preview", async () => {
+    const { cookie } = await loggedInCookieAndUser();
+
+    const create = await SELF.fetch("https://railcast.test/api/tokens", {
+      method: "POST",
+      headers: { Cookie: cookie },
+    });
+    expect(create.status).toBe(201);
+    const created = await create.json<{ id: string; token: string }>();
+    expect(created.id).toBeTruthy();
+
+    const list = await SELF.fetch("https://railcast.test/api/tokens", {
+      headers: { Cookie: cookie },
+    });
+    const body = await list.json<{ tokens: { id: string; preview: string }[] }>();
+    expect(body.tokens).toHaveLength(1);
+    expect(body.tokens[0].id).toBe(created.id);
+    expect(body.tokens[0].preview).toContain(created.token.slice(0, 8));
+  });
+
+  it("revokes a token so it no longer authenticates", async () => {
+    const { cookie } = await loggedInCookieAndUser();
+
+    const create = await SELF.fetch("https://railcast.test/api/tokens", {
+      method: "POST",
+      headers: { Cookie: cookie },
+    });
+    const { id, token } = await create.json<{ id: string; token: string }>();
+
+    const del = await SELF.fetch(`https://railcast.test/api/tokens/${id}`, {
+      method: "DELETE",
+      headers: { Cookie: cookie },
+    });
+    expect(del.status).toBe(204);
+
+    const list = await SELF.fetch("https://railcast.test/api/tokens", {
+      headers: { Cookie: cookie },
+    });
+    const body = await list.json<{ tokens: unknown[] }>();
+    expect(body.tokens).toHaveLength(0);
+
+    // and it no longer works as a bearer token for the CLI-facing API either
+    const res = await SELF.fetch("https://railcast.test/api/apps", {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ id: "should-not-work", signing_public_key: "x" }),
+    });
+    expect(res.status).toBe(401);
+  });
+
+  it("404s revoking a token that belongs to someone else", async () => {
+    const owner = await loggedInCookieAndUser();
+    const attacker = await loggedInCookieAndUser();
+
+    const create = await SELF.fetch("https://railcast.test/api/tokens", {
+      method: "POST",
+      headers: { Cookie: owner.cookie },
+    });
+    const { id } = await create.json<{ id: string }>();
+
+    const del = await SELF.fetch(`https://railcast.test/api/tokens/${id}`, {
+      method: "DELETE",
+      headers: { Cookie: attacker.cookie },
+    });
+    expect(del.status).toBe(404);
+  });
+});
+
 describe("POST /api/apps", () => {
   async function loggedInCookie(accessGranted = 1): Promise<string> {
     const userId = crypto.randomUUID();

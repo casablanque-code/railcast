@@ -386,13 +386,14 @@ async function handleApiListTokens(request: Request, env: Env): Promise<Response
   if (!user) return jsonResponse({ error: "unauthorized" }, 401);
 
   const { results } = await env.DB.prepare(
-    `SELECT token, created_at FROM api_tokens WHERE user_id = ? ORDER BY created_at DESC`
+    `SELECT id, token, created_at FROM api_tokens WHERE user_id = ? ORDER BY created_at DESC`
   )
     .bind(user.id)
-    .all<{ token: string; created_at: number }>();
+    .all<{ id: string; token: string; created_at: number }>();
 
   // Never re-expose the full secret once it's been issued — only enough to recognize it.
   const tokens = (results ?? []).map((t) => ({
+    id: t.id,
     preview: `${t.token.slice(0, 8)}…`,
     created_at: t.created_at,
   }));
@@ -404,15 +405,34 @@ async function handleApiCreateToken(request: Request, env: Env): Promise<Respons
   const user = await getSessionUser(request, env);
   if (!user) return jsonResponse({ error: "unauthorized" }, 401);
 
+  const id = crypto.randomUUID();
   const token = randomToken();
   await env.DB.prepare(
-    `INSERT INTO api_tokens (token, user_id, created_at) VALUES (?, ?, unixepoch())`
+    `INSERT INTO api_tokens (id, token, user_id, created_at) VALUES (?, ?, ?, unixepoch())`
   )
-    .bind(token, user.id)
+    .bind(id, token, user.id)
     .run();
 
   // Shown once — the dashboard must display and copy it immediately, we never return it again.
-  return jsonResponse({ token }, 201);
+  return jsonResponse({ id, token }, 201);
+}
+
+async function handleApiDeleteToken(
+  request: Request,
+  env: Env,
+  tokenId: string
+): Promise<Response> {
+  const user = await getSessionUser(request, env);
+  if (!user) return jsonResponse({ error: "unauthorized" }, 401);
+
+  const result = await env.DB.prepare(`DELETE FROM api_tokens WHERE id = ? AND user_id = ?`)
+    .bind(tokenId, user.id)
+    .run();
+
+  if (result.meta.changes === 0) {
+    return jsonResponse({ error: "not_found" }, 404);
+  }
+  return new Response(null, { status: 204 });
 }
 
 async function handleUpload(
@@ -622,6 +642,10 @@ export default {
       }
       if (url.pathname === "/api/tokens" && request.method === "POST") {
         return handleApiCreateToken(request, env);
+      }
+      const tokenDeleteMatch = url.pathname.match(/^\/api\/tokens\/([a-zA-Z0-9-]+)$/);
+      if (tokenDeleteMatch && request.method === "DELETE") {
+        return handleApiDeleteToken(request, env, tokenDeleteMatch[1]);
       }
       return jsonResponse({ error: "not_found" }, 404);
     }

@@ -45,33 +45,26 @@ export default function LandingPage() {
 
       <section className="border-t border-line py-10">
         <h2 className="text-xs font-semibold uppercase tracking-wide text-ink/50">How it works</h2>
-        <ol className="mt-5 space-y-5">
-          <li className="flex gap-4">
-            <span className="font-mono text-xs text-ink/35">01</span>
-            <p className="text-sm text-ink/75">Create an account and get a token.</p>
-          </li>
-          <li className="flex gap-4">
-            <span className="font-mono text-xs text-ink/35">02</span>
-            <p className="text-sm text-ink/75">
-              Publish from the CLI — it signs and uploads your build.
-            </p>
-          </li>
-          <li className="flex gap-4">
-            <span className="font-mono text-xs text-ink/35">03</span>
-            <p className="text-sm text-ink/75">Sparkle finds it. Your users update.</p>
-          </li>
-        </ol>
+        <p className="mt-4 text-sm text-ink/60">
+          Create an account, get a token, then two commands are the whole surface:
+        </p>
+        <pre className="mt-4 overflow-x-auto rounded-md bg-ink px-4 py-3 font-mono text-xs leading-relaxed text-paper">
+{`$ railcast init myapp
+$ railcast publish MyApp.zip`}
+        </pre>
+        <ul className="mt-3 space-y-1 font-mono text-xs text-ink/50">
+          <li>✓ Signed</li>
+          <li>✓ Uploaded</li>
+          <li>✓ Appcast updated</li>
+        </ul>
       </section>
 
       <section className="border-t border-line py-10">
-        <h2 className="text-xs font-semibold uppercase tracking-wide text-ink/50">Signing</h2>
-        <ul className="mt-5 space-y-3 text-sm text-ink/70">
-          <li>Every release is signed with EdDSA before Sparkle will install it.</li>
-          <li>
-            Your private signing key is generated and kept on your own machine — it never touches
-            our servers.
-          </li>
-        </ul>
+        <p className="text-base font-medium">Your signing key never leaves your machine.</p>
+        <p className="mt-2 text-sm text-ink/60">
+          Railcast signs metadata locally. Your private key is generated on your machine and is
+          never uploaded — Sparkle rejects any update that isn&apos;t signed with it.
+        </p>
       </section>
 
       <section className="border-t border-line py-10">

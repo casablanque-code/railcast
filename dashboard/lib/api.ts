@@ -48,6 +48,7 @@ export interface App {
 }
 
 export interface TokenPreview {
+  id: string;
   preview: string;
   created_at: number;
 }
@@ -72,5 +73,6 @@ export const api = {
       body: JSON.stringify({ id, signing_public_key: signingPublicKey }),
     }),
   listTokens: () => request<{ tokens: TokenPreview[] }>("/api/tokens"),
-  createToken: () => request<{ token: string }>("/api/tokens", { method: "POST" }),
+  createToken: () => request<{ id: string; token: string }>("/api/tokens", { method: "POST" }),
+  deleteToken: (id: string) => request<void>(`/api/tokens/${id}`, { method: "DELETE" }),
 };

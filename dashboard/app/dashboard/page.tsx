@@ -3,6 +3,8 @@
 import { FormEvent, useEffect, useState } from "react";
 import { api, ApiError, type App, type Me, type TokenPreview } from "@/lib/api";
 
+const INLINE_LIMIT = 3;
+
 function formatDate(unixSeconds: number): string {
   return new Date(unixSeconds * 1000).toLocaleString("en-US", {
     day: "2-digit",
@@ -26,6 +28,7 @@ export default function DashboardPage() {
   const [creatingToken, setCreatingToken] = useState(false);
   const [newToken, setNewToken] = useState<string | null>(null);
   const [tokenError, setTokenError] = useState<string | null>(null);
+  const [revokingId, setRevokingId] = useState<string | null>(null);
 
   async function refresh() {
     const [appsRes, tokensRes] = await Promise.all([api.listApps(), api.listTokens()]);
@@ -80,6 +83,22 @@ export default function DashboardPage() {
     }
   }
 
+  async function onRevokeToken(id: string) {
+    if (!window.confirm("Revoke this token? Anything using it to publish will stop working.")) {
+      return;
+    }
+    setRevokingId(id);
+    setTokenError(null);
+    try {
+      await api.deleteToken(id);
+      await refresh();
+    } catch (err) {
+      setTokenError(err instanceof ApiError ? err.message : "Couldn't revoke the token");
+    } finally {
+      setRevokingId(null);
+    }
+  }
+
   if (loadError) {
     return (
       <main>
@@ -95,6 +114,51 @@ export default function DashboardPage() {
       </main>
     );
   }
+
+  const appList = apps ?? [];
+  const inlineApps = appList.slice(0, INLINE_LIMIT);
+  const restApps = appList.slice(INLINE_LIMIT);
+
+  const tokenRow = (t: TokenPreview) => (
+    <div
+      key={t.id}
+      className="flex items-center justify-between border-b border-line pb-3 text-sm last:border-0 last:pb-0"
+    >
+      <span className="code-chip">{t.preview}</span>
+      <div className="flex items-center gap-3">
+        <span className="text-ink/50">created {formatDate(t.created_at)}</span>
+        <button
+          onClick={() => onRevokeToken(t.id)}
+          disabled={revokingId === t.id}
+          className="text-xs text-red-600 hover:underline disabled:opacity-50"
+        >
+          {revokingId === t.id ? "Revoking…" : "Revoke"}
+        </button>
+      </div>
+    </div>
+  );
+
+  const appRow = (app: App) => (
+    <div
+      key={app.id}
+      className="flex items-center justify-between border-b border-line pb-3 last:border-0 last:pb-0"
+    >
+      <div>
+        <p className="font-mono text-sm font-medium">{app.id}</p>
+        <p className="mt-0.5 text-xs text-ink/50">
+          {api.base}/{app.id}/appcast.xml
+        </p>
+      </div>
+      <a
+        href={`${api.base}/${app.id}/appcast.xml`}
+        target="_blank"
+        rel="noreferrer"
+        className="code-chip hover:border-accent hover:text-accent"
+      >
+        open feed
+      </a>
+    </div>
+  );
 
   return (
     <main className="space-y-10">
@@ -122,27 +186,23 @@ export default function DashboardPage() {
           </div>
         )}
 
-        <div className="card mb-4 space-y-3">
-          {tokens && tokens.length === 0 && (
-            <p className="text-sm text-ink/50">No tokens yet — generate one below.</p>
-          )}
-          {tokens?.map((t, i) => (
-            <div
-              key={i}
-              className="flex items-center justify-between border-b border-line pb-3 text-sm last:border-0 last:pb-0"
-            >
-              <span className="code-chip">{t.preview}</span>
-              <span className="text-ink/50">created {formatDate(t.created_at)}</span>
-            </div>
-          ))}
-        </div>
-
-        <div className="flex items-center gap-3">
+        <div className="mb-4 flex items-center gap-3">
           <button className="btn" onClick={onCreateToken} disabled={creatingToken}>
             {creatingToken ? "Creating…" : "Generate new token"}
           </button>
           {tokenError && <p className="text-sm text-red-600">{tokenError}</p>}
         </div>
+
+        {tokens && tokens.length === 0 ? (
+          <p className="text-sm text-ink/50">No tokens yet.</p>
+        ) : (
+          <details className="card">
+            <summary className="cursor-pointer text-sm font-medium text-ink/70">
+              Existing tokens ({tokens?.length ?? 0})
+            </summary>
+            <div className="mt-4 space-y-3">{tokens?.map(tokenRow)}</div>
+          </details>
+        )}
       </section>
 
       <section>
@@ -166,33 +226,22 @@ export default function DashboardPage() {
         </h2>
 
         <div className="card mb-4 space-y-3">
-          {apps && apps.length === 0 && (
+          {appList.length === 0 && (
             <p className="text-sm text-ink/50">
               Nothing yet — apps show up here after <span className="font-mono">railcast init</span>.
             </p>
           )}
-          {apps?.map((app) => (
-            <div
-              key={app.id}
-              className="flex items-center justify-between border-b border-line pb-3 last:border-0 last:pb-0"
-            >
-              <div>
-                <p className="font-mono text-sm font-medium">{app.id}</p>
-                <p className="mt-0.5 text-xs text-ink/50">
-                  {api.base}/{app.id}/appcast.xml
-                </p>
-              </div>
-              <a
-                href={`${api.base}/${app.id}/appcast.xml`}
-                target="_blank"
-                rel="noreferrer"
-                className="code-chip hover:border-accent hover:text-accent"
-              >
-                open feed
-              </a>
-            </div>
-          ))}
+          {inlineApps.map(appRow)}
         </div>
+
+        {restApps.length > 0 && (
+          <details className="card mb-4">
+            <summary className="cursor-pointer text-sm font-medium text-ink/70">
+              Show {restApps.length} more app{restApps.length === 1 ? "" : "s"}
+            </summary>
+            <div className="mt-4 space-y-3">{restApps.map(appRow)}</div>
+          </details>
+        )}
 
         <details className="card">
           <summary className="cursor-pointer text-sm font-medium text-ink/70">
