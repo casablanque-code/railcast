@@ -5,3 +5,4 @@ dist/
 railcast
 .dev.vars
 *.patch
+*.zip
