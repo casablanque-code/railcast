@@ -14,7 +14,7 @@ var version = "dev"
 
 func main() {
 	if len(os.Args) < 2 {
-		fmt.Println("usage: railcast <command>")
+		printHelp()
 		os.Exit(1)
 	}
 
@@ -27,10 +27,29 @@ func main() {
 		cmdPublish(os.Args[2:])
 	case "version", "--version", "-v":
 		fmt.Println("railcast", version)
+	case "help", "--help", "-h":
+		printHelp()
 	default:
-		fmt.Printf("unknown command: %s\n", os.Args[1])
+		fmt.Printf("unknown command: %s\n\n", os.Args[1])
+		printHelp()
 		os.Exit(1)
 	}
+}
+
+func printHelp() {
+	fmt.Println(`railcast — hosted appcast feeds and update delivery for Sparkle
+
+Usage:
+  railcast init --app <id> --token <token>   Create an app and generate its signing key (start here)
+  railcast publish --version <v> --build <n> --file <path>
+                                              Sign and publish a build (reads app/key from
+                                              .railcast.json after 'init', if run from the same directory)
+  railcast keygen                            Generate a signing key without creating an app
+  railcast version                           Print the CLI version
+  railcast help                              Show this message
+
+Get a token at https://railcast.casablanque.com/dashboard
+Run 'railcast <command> --help' for a command's full flag list.`)
 }
 
 func cmdKeygen() {

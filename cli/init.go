@@ -28,9 +28,10 @@ func cmdInit(args []string) {
 	fs := flag.NewFlagSet("init", flag.ExitOnError)
 	appID := fs.String("app", "", "app id to create, e.g. myapp (required)")
 	token := fs.String("token", os.Getenv("RAILCAST_TOKEN"), "API token from the dashboard (defaults to $RAILCAST_TOKEN)")
-	baseURL := fs.String("base-url", os.Getenv("RAILCAST_BASE_URL"), "Railcast API base URL (defaults to $RAILCAST_BASE_URL)")
+	baseURL := fs.String("base-url", "", "Railcast API base URL (default: "+defaultBaseURL+", override with $RAILCAST_BASE_URL)")
 	keyPath := fs.String("key", "", "where to save the private key (default: ./<app>.key)")
 	fs.Parse(args)
+	*baseURL = resolveBaseURL(*baseURL)
 
 	var missing []string
 	if *appID == "" {
@@ -38,9 +39,6 @@ func cmdInit(args []string) {
 	}
 	if *token == "" {
 		missing = append(missing, "--token (or $RAILCAST_TOKEN)")
-	}
-	if *baseURL == "" {
-		missing = append(missing, "--base-url (or $RAILCAST_BASE_URL)")
 	}
 	if len(missing) > 0 {
 		fmt.Printf("missing required flags: %s\n", strings.Join(missing, ", "))
@@ -74,12 +72,20 @@ func cmdInit(args []string) {
 		fail("app was created, but failed to save the private key locally: %v\nSave it now — it will not be shown again:\n%s", err, privB64)
 	}
 
+	if err := saveProjectConfig(projectConfig{App: app.ID, Key: *keyPath}); err != nil {
+		// Not fatal — the app and key both exist either way, this just
+		// means 'railcast publish' will need --app/--key spelled out.
+		fmt.Printf("Note: couldn't write %s (%v) — pass --app and --key to 'railcast publish' explicitly.\n", projectConfigPath, err)
+	}
+
 	fmt.Println()
 	fmt.Println("Done. Keep this file safe — losing it means you can't publish updates for this app again:")
 	fmt.Printf("  %s\n", *keyPath)
 	fmt.Println()
-	fmt.Println("Next: publish a build")
-	fmt.Printf("  railcast publish --app %s --key %s --token <token> --version 1.0.0 --build 1 --file <path>\n", app.ID, *keyPath)
+	fmt.Println("Tip: export RAILCAST_TOKEN=" + *token + " in your shell so you don't have to pass --token every time.")
+	fmt.Println()
+	fmt.Println("Next: publish a build from this directory")
+	fmt.Println("  railcast publish --version 1.0.0 --build 1 --file <path>")
 	fmt.Println()
 	fmt.Println("Add these to your app's Info.plist:")
 	fmt.Printf("  SUFeedURL: %s/%s/appcast.xml\n", strings.TrimRight(*baseURL, "/"), app.ID)

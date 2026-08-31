@@ -30,22 +30,29 @@ type createVersionResponse struct {
 }
 
 func cmdPublish(args []string) {
+	cfg := loadProjectConfig()
+	appDefault, keyDefault := "", ""
+	if cfg != nil {
+		appDefault, keyDefault = cfg.App, cfg.Key
+	}
+
 	fs := flag.NewFlagSet("publish", flag.ExitOnError)
-	appID := fs.String("app", "", "app id (required)")
+	appID := fs.String("app", appDefault, "app id — defaults to the one from 'railcast init' in this directory (.railcast.json)")
 	filePath := fs.String("file", "", "path to the build archive/pkg to publish (required)")
 	version := fs.String("version", "", "short version string, e.g. 1.2.0 (required)")
 	buildNumber := fs.Int("build", 0, "monotonically increasing build number (required)")
 	channel := fs.String("channel", "stable", "release channel: stable | beta")
 	notes := fs.String("notes", "", "release notes (plain text or markdown)")
 	notesFile := fs.String("notes-file", "", "path to a release notes file (overrides --notes)")
-	keyPath := fs.String("key", "", "path to the private signing key file from 'railcast keygen' (required)")
+	keyPath := fs.String("key", keyDefault, "path to the private signing key — defaults to the one from 'railcast init' in this directory")
 	token := fs.String("token", os.Getenv("RAILCAST_TOKEN"), "API token (defaults to $RAILCAST_TOKEN)")
-	baseURL := fs.String("base-url", os.Getenv("RAILCAST_BASE_URL"), "Railcast API base URL (defaults to $RAILCAST_BASE_URL)")
+	baseURL := fs.String("base-url", "", "Railcast API base URL (default: "+defaultBaseURL+", override with $RAILCAST_BASE_URL)")
 	fs.Parse(args)
+	*baseURL = resolveBaseURL(*baseURL)
 
 	var missing []string
 	if *appID == "" {
-		missing = append(missing, "--app")
+		missing = append(missing, "--app (or run 'railcast init' in this directory first)")
 	}
 	if *filePath == "" {
 		missing = append(missing, "--file")
@@ -57,13 +64,10 @@ func cmdPublish(args []string) {
 		missing = append(missing, "--build")
 	}
 	if *keyPath == "" {
-		missing = append(missing, "--key")
+		missing = append(missing, "--key (or run 'railcast init' in this directory first)")
 	}
 	if *token == "" {
 		missing = append(missing, "--token (or $RAILCAST_TOKEN)")
-	}
-	if *baseURL == "" {
-		missing = append(missing, "--base-url (or $RAILCAST_BASE_URL)")
 	}
 	if len(missing) > 0 {
 		fmt.Printf("missing required flags: %s\n", strings.Join(missing, ", "))

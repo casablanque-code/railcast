@@ -24,17 +24,30 @@ function escapeXml(s: string): string {
     .replace(/"/g, "&quot;");
 }
 
-function renderAppcast(appId: string, rows: VersionRow[], fileBaseUrl: string): string {
+function formatRfc2822(unixSeconds: number): string {
+  // Date#toUTCString() ends in "GMT", which validators reject — RFC 2822
+  // wants a numeric zone offset.
+  return new Date(unixSeconds * 1000).toUTCString().replace("GMT", "+0000");
+}
+
+function renderAppcast(
+  appId: string,
+  rows: VersionRow[],
+  fileBaseUrl: string,
+  channelLink: string
+): string {
   const items = rows
     .map((r) => {
-      const pubDate = new Date(r.created_at * 1000).toUTCString();
+      const pubDate = formatRfc2822(r.created_at);
       const downloadUrl = `${fileBaseUrl}/${r.file_key}`;
+      const description = r.release_notes
+        ? `\n      <description><![CDATA[${r.release_notes}]]></description>`
+        : "";
       return `    <item>
       <title>Version ${escapeXml(r.version)}</title>
       <pubDate>${pubDate}</pubDate>
       <sparkle:version>${r.build_number}</sparkle:version>
-      <sparkle:shortVersionString>${escapeXml(r.version)}</sparkle:shortVersionString>
-      <description><![CDATA[${r.release_notes ?? ""}]]></description>
+      <sparkle:shortVersionString>${escapeXml(r.version)}</sparkle:shortVersionString>${description}
       <enclosure
         url="${escapeXml(downloadUrl)}"
         length="${r.file_size}"
@@ -49,6 +62,7 @@ function renderAppcast(appId: string, rows: VersionRow[], fileBaseUrl: string): 
 <rss version="2.0" xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle">
   <channel>
     <title>${escapeXml(appId)} Updates</title>
+    <link>${escapeXml(channelLink)}</link>
 ${items}
   </channel>
 </rss>`;
@@ -563,7 +577,7 @@ async function handleAppcast(request: Request, env: Env, appId: string): Promise
     return new Response("Not found", { status: 404 });
   }
 
-  const xml = renderAppcast(appId, results, env.PUBLIC_FILE_BASE_URL);
+  const xml = renderAppcast(appId, results, env.PUBLIC_FILE_BASE_URL, `${url.origin}/${appId}/appcast.xml`);
 
   return new Response(xml, {
     status: 200,
