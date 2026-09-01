@@ -42,8 +42,10 @@ export interface Me {
 }
 
 export interface App {
-  id: string;
+  id: string; // server-generated, opaque — this is what's in the appcast URL
+  name: string; // free-text label you chose, not unique, never in a URL
   signing_public_key: string;
+  beta_token: string;
   created_at: number;
 }
 
@@ -67,11 +69,12 @@ export const api = {
       body: JSON.stringify({ email }),
     }),
   listApps: () => request<{ apps: App[] }>("/api/apps"),
-  createApp: (id: string, signingPublicKey: string) =>
+  createApp: (name: string, signingPublicKey: string) =>
     request<App>("/api/apps", {
       method: "POST",
-      body: JSON.stringify({ id, signing_public_key: signingPublicKey }),
+      body: JSON.stringify({ name, signing_public_key: signingPublicKey }),
     }),
+  deleteApp: (id: string) => request<void>(`/api/apps/${id}`, { method: "DELETE" }),
   listTokens: () => request<{ tokens: TokenPreview[] }>("/api/tokens"),
   createToken: () => request<{ id: string; token: string }>("/api/tokens", { method: "POST" }),
   deleteToken: (id: string) => request<void>(`/api/tokens/${id}`, { method: "DELETE" }),

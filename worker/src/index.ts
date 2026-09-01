@@ -559,6 +559,47 @@ async function handleApiDeleteToken(
   return new Response(null, { status: 204 });
 }
 
+async function handleApiDeleteApp(request: Request, env: Env, appId: string): Promise<Response> {
+  const user = await getAuthenticatedUser(request, env);
+  if (!user) return jsonResponse({ error: "unauthorized" }, 401);
+
+  if (!hasValidOrigin(request, new URL(request.url).origin)) {
+    return jsonResponse({ error: "bad_origin" }, 403);
+  }
+
+  const appRow = await env.DB.prepare(`SELECT owner_user_id FROM apps WHERE id = ?`)
+    .bind(appId)
+    .first<{ owner_user_id: string }>();
+
+  if (!appRow || appRow.owner_user_id !== user.id) {
+    // 404 either way — don't reveal whether an app id exists to a non-owner.
+    return jsonResponse({ error: "not_found" }, 404);
+  }
+
+  // Versions first (no ON DELETE CASCADE on this FK — D1 doesn't enforce
+  // foreign keys by default anyway, so do it explicitly and in the safe
+  // order regardless).
+  await env.DB.prepare(`DELETE FROM versions WHERE app_id = ?`).bind(appId).run();
+  await env.DB.prepare(`DELETE FROM apps WHERE id = ?`).bind(appId).run();
+
+  // Best-effort cleanup of the uploaded build artifacts in R2. Not
+  // transactional with the D1 deletes above (R2 and D1 are separate
+  // systems) — if this partially fails, we've still removed the app from
+  // every API surface (appcast, listing, ownership checks), which is what
+  // actually matters; a few orphaned objects under a now-unreachable
+  // prefix cost storage, not security.
+  let cursor: string | undefined;
+  do {
+    const listed = await env.BUILDS.list({ prefix: `${appId}/`, cursor });
+    if (listed.objects.length > 0) {
+      await env.BUILDS.delete(listed.objects.map((o) => o.key));
+    }
+    cursor = listed.truncated ? listed.cursor : undefined;
+  } while (cursor);
+
+  return new Response(null, { status: 204 });
+}
+
 async function requireAppOwnership(
   request: Request,
   env: Env,
@@ -640,6 +681,24 @@ async function handleCreateVersion(request: Request, env: Env, appId: string): P
   const head = await env.BUILDS.head(file_key);
   if (!head) {
     return new Response("file_key not found in storage — upload first", { status: 400 });
+  }
+
+  // Sparkle (and most updaters) trust build_number as a strictly increasing
+  // ordering — publishing one that's <= the current latest on this channel
+  // would either silently vanish (fine) or, worse, get treated as "newer"
+  // by a client that's confused about ordering. Enforce it server-side
+  // rather than trusting the CLI/build script to always get it right.
+  const latest = await env.DB.prepare(
+    `SELECT MAX(build_number) as max_build FROM versions WHERE app_id = ? AND channel = ?`
+  )
+    .bind(appId, channel)
+    .first<{ max_build: number | null }>();
+
+  if (latest?.max_build != null && build_number <= latest.max_build) {
+    return new Response(
+      `build_number ${build_number} is not greater than the current latest (${latest.max_build}) on channel "${channel}"`,
+      { status: 409 }
+    );
   }
 
   const createdAt = Math.floor(Date.now() / 1000);
@@ -748,6 +807,10 @@ export default {
       }
       if (url.pathname === "/api/apps" && request.method === "POST") {
         return handleApiCreateApp(request, env);
+      }
+      const appDeleteMatch = url.pathname.match(/^\/api\/apps\/([a-zA-Z0-9_-]+)$/);
+      if (appDeleteMatch && request.method === "DELETE") {
+        return handleApiDeleteApp(request, env, appDeleteMatch[1]);
       }
       if (url.pathname === "/api/tokens" && request.method === "GET") {
         return handleApiListTokens(request, env);

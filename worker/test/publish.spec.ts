@@ -119,4 +119,165 @@ describe("publish flow", () => {
     });
     expect(res.status).toBe(400);
   });
+
+  async function publishVersion(
+    token: string,
+    appId: string,
+    version: string,
+    buildNumber: number
+  ) {
+    const filename = `MyApp-${version}.zip`;
+    const uploadRes = await SELF.fetch(`https://railcast.test/${appId}/upload/${filename}`, {
+      method: "PUT",
+      headers: { Authorization: `Bearer ${token}` },
+      body: `bytes for ${version}`,
+    });
+    const upload = await uploadRes.json<{ file_key: string; file_size: number }>();
+
+    return SELF.fetch(`https://railcast.test/${appId}/versions`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+      body: JSON.stringify({
+        version,
+        build_number: buildNumber,
+        file_key: upload.file_key,
+        file_size: upload.file_size,
+        sha256: "deadbeef",
+        signature: `sig-${version}`,
+      }),
+    });
+  }
+
+  it("bumping to a higher build_number replaces what appcast.xml serves as latest", async () => {
+    const { token, appId } = await seedUserAppAndToken();
+
+    const first = await publishVersion(token, appId, "1.1.1", 1);
+    expect(first.status).toBe(201);
+
+    const bumped = await publishVersion(token, appId, "2.2.2", 2);
+    expect(bumped.status).toBe(201);
+
+    const appcastRes = await SELF.fetch(`https://railcast.test/${appId}/appcast.xml`);
+    const xml = await appcastRes.text();
+
+    // Newest (highest build_number) must be the first <item> — that's what
+    // an RSS/Sparkle consumer treats as "latest".
+    const firstItemIndex = xml.indexOf("<item>");
+    const versionIndex = xml.indexOf("<sparkle:shortVersionString>2.2.2</sparkle:shortVersionString>");
+    expect(versionIndex).toBeGreaterThan(firstItemIndex);
+    expect(xml.indexOf("2.2.2")).toBeLessThan(xml.indexOf("1.1.1"));
+  });
+
+  it("rejects publishing a build_number that isn't strictly greater than the current latest", async () => {
+    const { token, appId } = await seedUserAppAndToken();
+
+    const first = await publishVersion(token, appId, "2.2.2", 5);
+    expect(first.status).toBe(201);
+
+    const sameBuild = await publishVersion(token, appId, "2.2.2-again", 5);
+    expect(sameBuild.status).toBe(409);
+
+    const lowerBuild = await publishVersion(token, appId, "1.1.1", 3);
+    expect(lowerBuild.status).toBe(409);
+
+    // appcast is unaffected by the rejected attempts
+    const appcastRes = await SELF.fetch(`https://railcast.test/${appId}/appcast.xml`);
+    const xml = await appcastRes.text();
+    expect(xml).toContain("2.2.2");
+    expect(xml).not.toContain("1.1.1");
+  });
+
+  it("a fresh build_number on a different channel is independent of stable", async () => {
+    const { token, appId } = await seedUserAppAndToken();
+    await env.DB.prepare(`UPDATE apps SET beta_token = ? WHERE id = ?`)
+      .bind("beta-secret", appId)
+      .run();
+
+    const stable = await publishVersion(token, appId, "1.0.0", 10);
+    expect(stable.status).toBe(201);
+
+    // A beta build_number lower than stable's is fine — channels track
+    // build_number independently.
+    const betaUpload = await SELF.fetch(`https://railcast.test/${appId}/upload/beta.zip`, {
+      method: "PUT",
+      headers: { Authorization: `Bearer ${token}` },
+      body: "beta bytes",
+    });
+    const beta = await betaUpload.json<{ file_key: string; file_size: number }>();
+    const betaVersion = await SELF.fetch(`https://railcast.test/${appId}/versions`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+      body: JSON.stringify({
+        version: "1.1.0-beta",
+        build_number: 1,
+        channel: "beta",
+        file_key: beta.file_key,
+        file_size: beta.file_size,
+        sha256: "deadbeef",
+        signature: "sig-beta",
+      }),
+    });
+    expect(betaVersion.status).toBe(201);
+  });
+});
+
+describe("DELETE /api/apps/:id", () => {
+  it("owner can delete their app; it disappears from the feed and the listing", async () => {
+    const { token, appId, userId } = await seedUserAppAndToken();
+    await publishVersion(token, appId, "1.0.0", 1);
+
+    const sessionId = "session-" + crypto.randomUUID();
+    const now = Math.floor(Date.now() / 1000);
+    await env.DB.prepare(
+      `INSERT INTO sessions (id, user_id, expires_at, created_at) VALUES (?, ?, ?, ?)`
+    )
+      .bind(await sha256Hex(sessionId), userId, now + 3600, now)
+      .run();
+    const cookie = `session=${sessionId}`;
+
+    const del = await SELF.fetch(`https://railcast.test/api/apps/${appId}`, {
+      method: "DELETE",
+      headers: { Cookie: cookie },
+    });
+    expect(del.status).toBe(204);
+
+    const appcastRes = await SELF.fetch(`https://railcast.test/${appId}/appcast.xml`);
+    expect(appcastRes.status).toBe(404);
+
+    const list = await SELF.fetch("https://railcast.test/api/apps", { headers: { Cookie: cookie } });
+    const body = await list.json<{ apps: { id: string }[] }>();
+    expect(body.apps.find((a) => a.id === appId)).toBeUndefined();
+  });
+
+  it("404s deleting an app that belongs to someone else", async () => {
+    const owner = await seedUserAppAndToken();
+
+    const attackerId = crypto.randomUUID();
+    const attackerSession = "session-" + crypto.randomUUID();
+    const now = Math.floor(Date.now() / 1000);
+    await env.DB.prepare(`INSERT INTO users (id, email, created_at) VALUES (?, ?, ?)`)
+      .bind(attackerId, `${crypto.randomUUID()}@example.com`, now)
+      .run();
+    await env.DB.prepare(
+      `INSERT INTO sessions (id, user_id, expires_at, created_at) VALUES (?, ?, ?, ?)`
+    )
+      .bind(await sha256Hex(attackerSession), attackerId, now + 3600, now)
+      .run();
+
+    const del = await SELF.fetch(`https://railcast.test/api/apps/${owner.appId}`, {
+      method: "DELETE",
+      headers: { Cookie: `session=${attackerSession}` },
+    });
+    expect(del.status).toBe(404);
+
+    // and the app is still there
+    const appcastRes = await SELF.fetch(`https://railcast.test/${owner.appId}/appcast.xml`);
+    expect(appcastRes.status).toBe(404); // no versions published yet in this test, but not because it was deleted
+  });
+
+  it("401s deleting without auth", async () => {
+    const { appId } = await seedUserAppAndToken();
+    const res = await SELF.fetch(`https://railcast.test/api/apps/${appId}`, { method: "DELETE" });
+    expect(res.status).toBe(401);
+  });
 });

@@ -20,7 +20,7 @@ export default function DashboardPage() {
   const [tokens, setTokens] = useState<TokenPreview[] | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
 
-  const [appId, setAppId] = useState("");
+  const [appName, setAppName] = useState("");
   const [publicKey, setPublicKey] = useState("");
   const [creatingApp, setCreatingApp] = useState(false);
   const [appError, setAppError] = useState<string | null>(null);
@@ -29,6 +29,9 @@ export default function DashboardPage() {
   const [newToken, setNewToken] = useState<string | null>(null);
   const [tokenError, setTokenError] = useState<string | null>(null);
   const [revokingId, setRevokingId] = useState<string | null>(null);
+
+  const [deletingAppId, setDeletingAppId] = useState<string | null>(null);
+  const [appDeleteError, setAppDeleteError] = useState<string | null>(null);
 
   async function refresh() {
     const [appsRes, tokensRes] = await Promise.all([api.listApps(), api.listTokens()]);
@@ -57,8 +60,8 @@ export default function DashboardPage() {
     setCreatingApp(true);
     setAppError(null);
     try {
-      await api.createApp(appId, publicKey);
-      setAppId("");
+      await api.createApp(appName, publicKey);
+      setAppName("");
       setPublicKey("");
       await refresh();
     } catch (err) {
@@ -96,6 +99,26 @@ export default function DashboardPage() {
       setTokenError(err instanceof ApiError ? err.message : "Couldn't revoke the token");
     } finally {
       setRevokingId(null);
+    }
+  }
+
+  async function onDeleteApp(app: App) {
+    if (
+      !window.confirm(
+        `Delete "${app.name || app.id}"? This removes its appcast feed, published versions, and uploaded builds. Apps that already installed a version keep running it, but Sparkle can no longer check for updates. This can't be undone.`
+      )
+    ) {
+      return;
+    }
+    setDeletingAppId(app.id);
+    setAppDeleteError(null);
+    try {
+      await api.deleteApp(app.id);
+      await refresh();
+    } catch (err) {
+      setAppDeleteError(err instanceof ApiError ? err.message : "Couldn't delete the app");
+    } finally {
+      setDeletingAppId(null);
     }
   }
 
@@ -144,19 +167,29 @@ export default function DashboardPage() {
       className="flex items-center justify-between border-b border-line pb-3 last:border-0 last:pb-0"
     >
       <div>
-        <p className="font-mono text-sm font-medium">{app.id}</p>
-        <p className="mt-0.5 text-xs text-ink/50">
+        <p className="text-sm font-medium">{app.name || "(unnamed)"}</p>
+        <p className="mt-0.5 font-mono text-xs text-ink/50">
           {api.base}/{app.id}/appcast.xml
         </p>
       </div>
-      <a
-        href={`${api.base}/${app.id}/appcast.xml`}
-        target="_blank"
-        rel="noreferrer"
-        className="code-chip hover:border-accent hover:text-accent"
-      >
-        open feed
-      </a>
+      <div className="flex items-center gap-4">
+        <a
+          href={`${api.base}/${app.id}/appcast.xml`}
+          target="_blank"
+          rel="noreferrer"
+          className="code-chip hover:border-accent hover:text-accent"
+        >
+          open feed
+        </a>
+        <button
+          type="button"
+          onClick={() => onDeleteApp(app)}
+          disabled={deletingAppId === app.id}
+          className="text-xs text-red-600 hover:underline disabled:opacity-50"
+        >
+          {deletingAppId === app.id ? "Deleting…" : "Delete"}
+        </button>
+      </div>
     </div>
   );
 
@@ -236,6 +269,8 @@ export default function DashboardPage() {
           Your apps
         </h2>
 
+        {appDeleteError && <p className="mb-3 text-sm text-red-600">{appDeleteError}</p>}
+
         <div className="card mb-4 space-y-3">
           {appList.length === 0 && (
             <p className="text-sm text-ink/50">
@@ -261,18 +296,22 @@ export default function DashboardPage() {
           <form onSubmit={onCreateApp} className="mt-4 space-y-4">
             <div className="grid gap-4 sm:grid-cols-2">
               <div>
-                <label className="label" htmlFor="app-id">
-                  App ID
+                <label className="label" htmlFor="app-name">
+                  App name
                 </label>
                 <input
-                  id="app-id"
-                  className="input font-mono"
-                  placeholder="myapp"
-                  pattern="[a-zA-Z0-9_-]{1,64}"
+                  id="app-name"
+                  className="input"
+                  placeholder="My Menu Bar App"
+                  maxLength={128}
                   required
-                  value={appId}
-                  onChange={(e) => setAppId(e.target.value)}
+                  value={appName}
+                  onChange={(e) => setAppName(e.target.value)}
                 />
+                <p className="mt-1 text-xs text-ink/40">
+                  Just a label for you — the public feed URL is generated separately and
+                  doesn&apos;t need to be unique.
+                </p>
               </div>
               <div>
                 <label className="label" htmlFor="public-key">
