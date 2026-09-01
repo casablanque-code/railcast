@@ -87,6 +87,29 @@ describe("upload", () => {
     });
     expect(res.status).toBe(401);
   });
+
+  it("403s a valid token belonging to a different app's owner", async () => {
+    const owner = await seedUserAppAndToken();
+    const attacker = await seedUserAppAndToken();
+
+    // attacker's token is real and valid — just not for owner's app
+    const res = await SELF.fetch(`https://railcast.test/${owner.appId}/upload/build.zip`, {
+      method: "PUT",
+      headers: { Authorization: `Bearer ${attacker.token}` },
+      body: "bytes",
+    });
+    expect(res.status).toBe(403);
+  });
+
+  it("404s an app id that doesn't exist at all — distinct from 403 so the CLI can tell you the id is wrong", async () => {
+    const { token } = await seedUserAppAndToken();
+    const res = await SELF.fetch(`https://railcast.test/this-app-id-was-never-created/upload/build.zip`, {
+      method: "PUT",
+      headers: { Authorization: `Bearer ${token}` },
+      body: "bytes",
+    });
+    expect(res.status).toBe(404);
+  });
 });
 
 describe("publish flow", () => {

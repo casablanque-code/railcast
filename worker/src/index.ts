@@ -614,7 +614,17 @@ async function requireAppOwnership(
     .bind(appId)
     .first<{ owner_user_id: string }>();
 
-  if (!appRow || appRow.owner_user_id !== userId) {
+  if (!appRow) {
+    // Distinct from 403 on purpose: this tells the CLI (and the person
+    // typing the wrong id) that the id itself is wrong, not that they
+    // lack permission on a real app — much easier to debug. This doesn't
+    // meaningfully help an attacker enumerate other people's app ids: the
+    // id space is a random 12-char string (~71 bits), so guessing one
+    // that exists is already infeasible regardless of how the error
+    // differs for a hit vs a miss.
+    return { ok: false, response: new Response("App not found", { status: 404 }) };
+  }
+  if (appRow.owner_user_id !== userId) {
     return { ok: false, response: new Response("Forbidden", { status: 403 }) };
   }
 

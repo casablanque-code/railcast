@@ -37,7 +37,7 @@ func cmdPublish(args []string) {
 	}
 
 	fs := flag.NewFlagSet("publish", flag.ExitOnError)
-	appID := fs.String("app", appDefault, "app id — defaults to the one from 'railcast init' in this directory (.railcast.json)")
+	appID := fs.String("app", appDefault, "app id from 'railcast init' (not the --app name you gave init) — defaults to .railcast.json in this directory")
 	filePath := fs.String("file", "", "path to the build archive/pkg to publish (required)")
 	version := fs.String("version", "", "short version string, e.g. 1.2.0 (required)")
 	buildNumber := fs.Int("build", 0, "monotonically increasing build number (required)")
@@ -173,6 +173,12 @@ func doUpload(baseURL, token, appID, filename string, data []byte) (*uploadRespo
 	defer resp.Body.Close()
 
 	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode == http.StatusNotFound {
+		return nil, fmt.Errorf(
+			"no app with id %q — --app takes the id from .railcast.json (or the one printed by 'railcast init'), not the name you gave --app at init time",
+			appID,
+		)
+	}
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("server returned %d: %s", resp.StatusCode, string(body))
 	}
@@ -232,6 +238,12 @@ func doCreateVersion(r createVersionRequest) (*createVersionResponse, error) {
 	defer resp.Body.Close()
 
 	respBody, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode == http.StatusNotFound {
+		return nil, fmt.Errorf(
+			"no app with id %q — --app takes the id from .railcast.json (or the one printed by 'railcast init'), not the name you gave --app at init time",
+			r.AppID,
+		)
+	}
 	if resp.StatusCode != http.StatusCreated {
 		return nil, fmt.Errorf("server returned %d: %s", resp.StatusCode, string(respBody))
 	}
