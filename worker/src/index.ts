@@ -68,13 +68,77 @@ ${items}
 </rss>`;
 }
 
-// ---------- Auth helpers ----------
+// ---------- Crypto / id helpers ----------
 
 function randomToken(): string {
   const bytes = new Uint8Array(32);
   crypto.getRandomValues(bytes);
   return Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
 }
+
+// Server-generated, opaque, unguessable app id. This is what shows up in
+// the public appcast URL — it must NEVER be something the client gets to
+// choose, or we're back to name-squatting + brute-forceable slugs.
+// ~71 bits of entropy (12 chars, base62) — plenty for a URL path segment
+// that's also checked for DB collision before use.
+const BASE62 = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
+function randomAppId(): string {
+  const bytes = new Uint8Array(12);
+  crypto.getRandomValues(bytes);
+  return Array.from(bytes, (b) => BASE62[b % BASE62.length]).join("");
+}
+
+async function sha256Hex(input: string): Promise<string> {
+  const data = new TextEncoder().encode(input);
+  const digest = await crypto.subtle.digest("SHA-256", data);
+  return Array.from(new Uint8Array(digest), (b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+// ---------- Rate limiting (D1-backed, coarse but enough to stop spam) ----------
+
+async function rateLimited(
+  env: Env,
+  bucket: string,
+  limit: number,
+  windowSeconds: number
+): Promise<boolean> {
+  const now = Math.floor(Date.now() / 1000);
+  const cutoff = now - windowSeconds;
+
+  const row = await env.DB.prepare(
+    `SELECT COUNT(*) as c FROM rate_limit_hits WHERE bucket = ? AND created_at > ?`
+  )
+    .bind(bucket, cutoff)
+    .first<{ c: number }>();
+
+  if ((row?.c ?? 0) >= limit) return true;
+
+  await env.DB.prepare(`INSERT INTO rate_limit_hits (bucket, created_at) VALUES (?, ?)`)
+    .bind(bucket, now)
+    .run();
+  // Opportunistic cleanup so the table doesn't grow unbounded — cheap
+  // because it's scoped to this one bucket.
+  await env.DB.prepare(`DELETE FROM rate_limit_hits WHERE bucket = ? AND created_at <= ?`)
+    .bind(bucket, cutoff)
+    .run();
+
+  return false;
+}
+
+function clientIp(request: Request): string {
+  return request.headers.get("CF-Connecting-IP") ?? "unknown";
+}
+
+// ---------- CSRF-lite: state-changing /api/* calls must come from us ----------
+// Cookie is SameSite=Lax which already blocks most cross-site fetch/XHR in
+// modern browsers, but that's not guaranteed everywhere — belt and braces.
+function hasValidOrigin(request: Request, selfOrigin: string): boolean {
+  const origin = request.headers.get("Origin");
+  if (!origin) return true; // no Origin header (e.g. CLI/bearer-token calls) — nothing to check
+  return origin === selfOrigin;
+}
+
+// ---------- Auth helpers ----------
 
 function getCookie(request: Request, name: string): string | null {
   const cookieHeader = request.headers.get("Cookie");
@@ -89,6 +153,7 @@ async function getSessionUser(
 ): Promise<{ id: string; email: string } | null> {
   const sessionId = getCookie(request, "session");
   if (!sessionId) return null;
+  const sessionHash = await sha256Hex(sessionId);
 
   const now = Math.floor(Date.now() / 1000);
   const row = await env.DB.prepare(
@@ -97,7 +162,7 @@ async function getSessionUser(
      JOIN users ON users.id = sessions.user_id
      WHERE sessions.id = ? AND sessions.expires_at > ?`
   )
-    .bind(sessionId, now)
+    .bind(sessionHash, now)
     .first<{ id: string; email: string }>();
 
   return row ?? null;
@@ -113,6 +178,7 @@ async function getUserFromBearerToken(
   const authHeader = request.headers.get("Authorization") ?? "";
   const token = authHeader.replace("Bearer ", "");
   if (!token) return null;
+  const tokenHash = await sha256Hex(token);
 
   const row = await env.DB.prepare(
     `SELECT users.id as id, users.email as email
@@ -120,7 +186,7 @@ async function getUserFromBearerToken(
      JOIN users ON users.id = api_tokens.user_id
      WHERE api_tokens.token = ?`
   )
-    .bind(token)
+    .bind(tokenHash)
     .first<{ id: string; email: string }>();
 
   return row ?? null;
@@ -134,6 +200,21 @@ async function getAuthenticatedUser(
   const sessionUser = await getSessionUser(request, env);
   if (sessionUser) return sessionUser;
   return getUserFromBearerToken(request, env);
+}
+
+// Resolves a bearer token straight to a user id, for the upload/versions
+// routes which never go through a browser session.
+async function getUserIdFromBearerToken(request: Request, env: Env): Promise<string | null> {
+  const authHeader = request.headers.get("Authorization") ?? "";
+  const token = authHeader.replace("Bearer ", "");
+  if (!token) return null;
+  const tokenHash = await sha256Hex(token);
+
+  const row = await env.DB.prepare(`SELECT user_id FROM api_tokens WHERE token = ?`)
+    .bind(tokenHash)
+    .first<{ user_id: string }>();
+
+  return row?.user_id ?? null;
 }
 
 // Early-access gate: until billing exists, access is granted manually
@@ -200,6 +281,14 @@ async function handleWaitlistRequest(request: Request, env: Env): Promise<Respon
     return new Response("Valid email required", { status: 400 });
   }
 
+  const ip = clientIp(request);
+  if (
+    (await rateLimited(env, `waitlist:ip:${ip}`, 10, 3600)) ||
+    (await rateLimited(env, `waitlist:email:${email}`, 3, 3600))
+  ) {
+    return new Response("Too many requests — try again later", { status: 429 });
+  }
+
   await env.DB.prepare(`INSERT INTO waitlist (id, email, created_at) VALUES (?, ?, unixepoch())`)
     .bind(crypto.randomUUID(), email)
     .run();
@@ -225,13 +314,27 @@ async function handleAuthRequest(request: Request, env: Env): Promise<Response> 
     return new Response("Valid email required", { status: 400 });
   }
 
+  const ip = clientIp(request);
+  if (
+    (await rateLimited(env, `authreq:ip:${ip}`, 15, 3600)) ||
+    (await rateLimited(env, `authreq:email:${email}`, 5, 3600))
+  ) {
+    // Same generic response either way — don't reveal that rate limiting
+    // (vs. anything else) is what happened.
+    return new Response(JSON.stringify({ ok: true, message: "Check your email" }), {
+      status: 200,
+      headers: { "Content-Type": "application/json" },
+    });
+  }
+
   const token = randomToken();
+  const tokenHash = await sha256Hex(token);
   const expiresAt = Math.floor(Date.now() / 1000) + 15 * 60;
 
   await env.DB.prepare(
     `INSERT INTO magic_links (token, email, expires_at, used) VALUES (?, ?, ?, 0)`
   )
-    .bind(token, email, expiresAt)
+    .bind(tokenHash, email, expiresAt)
     .run();
 
   const url = new URL(request.url);
@@ -251,11 +354,12 @@ async function handleAuthVerify(request: Request, env: Env): Promise<Response> {
   if (!token) {
     return new Response("Missing token", { status: 400 });
   }
+  const tokenHash = await sha256Hex(token);
 
   const linkRow = await env.DB.prepare(
     `SELECT email, expires_at, used FROM magic_links WHERE token = ?`
   )
-    .bind(token)
+    .bind(tokenHash)
     .first<{ email: string; expires_at: number; used: number }>();
 
   const now = Math.floor(Date.now() / 1000);
@@ -263,7 +367,7 @@ async function handleAuthVerify(request: Request, env: Env): Promise<Response> {
     return new Response("Invalid or expired link", { status: 400 });
   }
 
-  await env.DB.prepare(`UPDATE magic_links SET used = 1 WHERE token = ?`).bind(token).run();
+  await env.DB.prepare(`UPDATE magic_links SET used = 1 WHERE token = ?`).bind(tokenHash).run();
 
   let user = await env.DB.prepare(`SELECT id FROM users WHERE email = ?`)
     .bind(linkRow.email)
@@ -278,12 +382,13 @@ async function handleAuthVerify(request: Request, env: Env): Promise<Response> {
   }
 
   const sessionId = randomToken();
+  const sessionHash = await sha256Hex(sessionId);
   const sessionExpiresAt = now + 30 * 24 * 60 * 60;
 
   await env.DB.prepare(
     `INSERT INTO sessions (id, user_id, expires_at, created_at) VALUES (?, ?, ?, ?)`
   )
-    .bind(sessionId, user.id, sessionExpiresAt, now)
+    .bind(sessionHash, user.id, sessionExpiresAt, now)
     .run();
 
   return new Response(null, {
@@ -327,10 +432,10 @@ async function handleApiListApps(request: Request, env: Env): Promise<Response> 
   if (!user) return jsonResponse({ error: "unauthorized" }, 401);
 
   const { results } = await env.DB.prepare(
-    `SELECT id, signing_public_key, created_at FROM apps WHERE owner_user_id = ? ORDER BY created_at DESC`
+    `SELECT id, name, signing_public_key, beta_token, created_at FROM apps WHERE owner_user_id = ? ORDER BY created_at DESC`
   )
     .bind(user.id)
-    .all<{ id: string; signing_public_key: string; created_at: number }>();
+    .all<{ id: string; name: string; signing_public_key: string; beta_token: string; created_at: number }>();
 
   return jsonResponse({ apps: results ?? [] });
 }
@@ -338,6 +443,10 @@ async function handleApiListApps(request: Request, env: Env): Promise<Response> 
 async function handleApiCreateApp(request: Request, env: Env): Promise<Response> {
   const user = await getAuthenticatedUser(request, env);
   if (!user) return jsonResponse({ error: "unauthorized" }, 401);
+
+  if (!hasValidOrigin(request, new URL(request.url).origin)) {
+    return jsonResponse({ error: "bad_origin" }, 403);
+  }
 
   if (!(await hasActiveAccess(user.id, env))) {
     return jsonResponse(
@@ -349,36 +458,47 @@ async function handleApiCreateApp(request: Request, env: Env): Promise<Response>
     );
   }
 
-  let body: { id?: string; signing_public_key?: string };
+  let body: { name?: string; signing_public_key?: string };
   try {
     body = await request.json();
   } catch {
     return jsonResponse({ error: "invalid_json" }, 400);
   }
 
-  const appId = body.id?.trim() ?? "";
+  // `name` is a free-text label only — never used in a URL, never checked
+  // for uniqueness, so it can't collide with anyone else's app name.
+  const name = (body.name?.trim() ?? "").slice(0, 128);
   const publicKey = body.signing_public_key?.trim() ?? "";
 
-  if (!/^[a-zA-Z0-9_-]{1,64}$/.test(appId) || !publicKey) {
+  if (!name || !publicKey) {
     return jsonResponse(
-      { error: "invalid_input", message: "app id and signing_public_key are required; id must match [a-zA-Z0-9_-]{1,64}" },
+      { error: "invalid_input", message: "name and signing_public_key are required" },
       400
     );
   }
 
-  const existing = await env.DB.prepare(`SELECT id FROM apps WHERE id = ?`).bind(appId).first();
-  if (existing) {
-    return jsonResponse({ error: "app_exists" }, 409);
+  // The public id is server-generated and opaque — retry on the
+  // astronomically unlikely collision instead of trusting client input.
+  let appId = randomAppId();
+  for (let attempt = 0; attempt < 5; attempt++) {
+    const existing = await env.DB.prepare(`SELECT id FROM apps WHERE id = ?`).bind(appId).first();
+    if (!existing) break;
+    appId = randomAppId();
   }
 
+  const betaToken = randomToken().slice(0, 32);
+
   await env.DB.prepare(
-    `INSERT INTO apps (id, owner_email, owner_user_id, signing_public_key, created_at)
-     VALUES (?, ?, ?, ?, unixepoch())`
+    `INSERT INTO apps (id, name, owner_email, owner_user_id, signing_public_key, beta_token, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, unixepoch())`
   )
-    .bind(appId, user.email, user.id, publicKey)
+    .bind(appId, name, user.email, user.id, publicKey, betaToken)
     .run();
 
-  return jsonResponse({ id: appId, signing_public_key: publicKey }, 201);
+  return jsonResponse(
+    { id: appId, name, signing_public_key: publicKey, beta_token: betaToken },
+    201
+  );
 }
 
 async function handleApiListTokens(request: Request, env: Env): Promise<Response> {
@@ -386,34 +506,34 @@ async function handleApiListTokens(request: Request, env: Env): Promise<Response
   if (!user) return jsonResponse({ error: "unauthorized" }, 401);
 
   const { results } = await env.DB.prepare(
-    `SELECT id, token, created_at FROM api_tokens WHERE user_id = ? ORDER BY created_at DESC`
+    `SELECT id, preview, created_at FROM api_tokens WHERE user_id = ? ORDER BY created_at DESC`
   )
     .bind(user.id)
-    .all<{ id: string; token: string; created_at: number }>();
+    .all<{ id: string; preview: string; created_at: number }>();
 
-  // Never re-expose the full secret once it's been issued — only enough to recognize it.
-  const tokens = (results ?? []).map((t) => ({
-    id: t.id,
-    preview: `${t.token.slice(0, 8)}…`,
-    created_at: t.created_at,
-  }));
-
-  return jsonResponse({ tokens });
+  return jsonResponse({ tokens: results ?? [] });
 }
 
 async function handleApiCreateToken(request: Request, env: Env): Promise<Response> {
   const user = await getSessionUser(request, env);
   if (!user) return jsonResponse({ error: "unauthorized" }, 401);
 
+  if (!hasValidOrigin(request, new URL(request.url).origin)) {
+    return jsonResponse({ error: "bad_origin" }, 403);
+  }
+
   const id = crypto.randomUUID();
   const token = randomToken();
+  const tokenHash = await sha256Hex(token);
+  const preview = `${token.slice(0, 8)}…`;
   await env.DB.prepare(
-    `INSERT INTO api_tokens (id, token, user_id, created_at) VALUES (?, ?, ?, unixepoch())`
+    `INSERT INTO api_tokens (id, token, preview, user_id, created_at) VALUES (?, ?, ?, ?, unixepoch())`
   )
-    .bind(id, token, user.id)
+    .bind(id, tokenHash, preview, user.id)
     .run();
 
-  // Shown once — the dashboard must display and copy it immediately, we never return it again.
+  // Shown once — the dashboard must display and copy it immediately, we
+  // only ever stored the hash so we genuinely cannot show it again.
   return jsonResponse({ id, token }, 201);
 }
 
@@ -425,6 +545,10 @@ async function handleApiDeleteToken(
   const user = await getSessionUser(request, env);
   if (!user) return jsonResponse({ error: "unauthorized" }, 401);
 
+  if (!hasValidOrigin(request, new URL(request.url).origin)) {
+    return jsonResponse({ error: "bad_origin" }, 403);
+  }
+
   const result = await env.DB.prepare(`DELETE FROM api_tokens WHERE id = ? AND user_id = ?`)
     .bind(tokenId, user.id)
     .run();
@@ -435,33 +559,35 @@ async function handleApiDeleteToken(
   return new Response(null, { status: 204 });
 }
 
-async function handleUpload(
+async function requireAppOwnership(
   request: Request,
   env: Env,
-  appId: string,
-  filename: string
-): Promise<Response> {
-  const authHeader = request.headers.get("Authorization") ?? "";
-  const token = authHeader.replace("Bearer ", "");
-  if (!token) {
-    return new Response("Unauthorized", { status: 401 });
-  }
-
-  const tokenRow = await env.DB.prepare(`SELECT user_id FROM api_tokens WHERE token = ?`)
-    .bind(token)
-    .first<{ user_id: string }>();
-
-  if (!tokenRow) {
-    return new Response("Unauthorized", { status: 401 });
+  appId: string
+): Promise<{ ok: true } | { ok: false; response: Response }> {
+  const userId = await getUserIdFromBearerToken(request, env);
+  if (!userId) {
+    return { ok: false, response: new Response("Unauthorized", { status: 401 }) };
   }
 
   const appRow = await env.DB.prepare(`SELECT owner_user_id FROM apps WHERE id = ?`)
     .bind(appId)
     .first<{ owner_user_id: string }>();
 
-  if (!appRow || appRow.owner_user_id !== tokenRow.user_id) {
-    return new Response("Forbidden", { status: 403 });
+  if (!appRow || appRow.owner_user_id !== userId) {
+    return { ok: false, response: new Response("Forbidden", { status: 403 }) };
   }
+
+  return { ok: true };
+}
+
+async function handleUpload(
+  request: Request,
+  env: Env,
+  appId: string,
+  filename: string
+): Promise<Response> {
+  const auth = await requireAppOwnership(request, env, appId);
+  if (!auth.ok) return auth.response;
 
   if (!request.body) {
     return new Response("Missing body", { status: 400 });
@@ -485,36 +611,6 @@ interface CreateVersionBody {
   sha256?: string;
   signature?: string;
   release_notes?: string;
-}
-
-async function requireAppOwnership(
-  request: Request,
-  env: Env,
-  appId: string
-): Promise<{ ok: true } | { ok: false; response: Response }> {
-  const authHeader = request.headers.get("Authorization") ?? "";
-  const token = authHeader.replace("Bearer ", "");
-  if (!token) {
-    return { ok: false, response: new Response("Unauthorized", { status: 401 }) };
-  }
-
-  const tokenRow = await env.DB.prepare(`SELECT user_id FROM api_tokens WHERE token = ?`)
-    .bind(token)
-    .first<{ user_id: string }>();
-
-  if (!tokenRow) {
-    return { ok: false, response: new Response("Unauthorized", { status: 401 }) };
-  }
-
-  const appRow = await env.DB.prepare(`SELECT owner_user_id FROM apps WHERE id = ?`)
-    .bind(appId)
-    .first<{ owner_user_id: string }>();
-
-  if (!appRow || appRow.owner_user_id !== tokenRow.user_id) {
-    return { ok: false, response: new Response("Forbidden", { status: 403 }) };
-  }
-
-  return { ok: true };
 }
 
 async function handleCreateVersion(request: Request, env: Env, appId: string): Promise<Response> {
@@ -582,6 +678,22 @@ async function handleCreateVersion(request: Request, env: Env, appId: string): P
 async function handleAppcast(request: Request, env: Env, appId: string): Promise<Response> {
   const url = new URL(request.url);
   const channel = url.searchParams.get("channel") ?? "stable";
+
+  // Non-stable channels need the app's beta token — the channel name
+  // itself isn't a secret, so without this anyone who finds the (opaque,
+  // but now-published) appcast URL could also read the beta feed.
+  if (channel !== "stable") {
+    const appRow = await env.DB.prepare(`SELECT beta_token FROM apps WHERE id = ?`)
+      .bind(appId)
+      .first<{ beta_token: string | null }>();
+
+    const suppliedToken = url.searchParams.get("token") ?? "";
+    if (!appRow || !appRow.beta_token || suppliedToken !== appRow.beta_token) {
+      // Same 404 as "not found" — don't reveal whether the app/channel
+      // exists to someone without the token.
+      return new Response("Not found", { status: 404 });
+    }
+  }
 
   const { results } = await env.DB.prepare(
     `SELECT version, build_number, file_key, file_size, sha256, signature, release_notes, created_at

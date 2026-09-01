@@ -16,7 +16,9 @@ import (
 
 type createAppResponse struct {
 	ID               string `json:"id"`
+	Name             string `json:"name"`
 	SigningPublicKey string `json:"signing_public_key"`
+	BetaToken        string `json:"beta_token"`
 }
 
 type apiErrorResponse struct {
@@ -26,7 +28,11 @@ type apiErrorResponse struct {
 
 func cmdInit(args []string) {
 	fs := flag.NewFlagSet("init", flag.ExitOnError)
-	appID := fs.String("app", "", "app id to create, e.g. myapp (required)")
+	// This is a local label only now — the server generates the real,
+	// unguessable id used in the appcast URL. Kept as --app because it's
+	// still what picks the default key filename and shows up in your
+	// terminal; it does NOT need to be unique across all Railcast users.
+	appName := fs.String("app", "", "a name for this app, e.g. myapp (required, local label only)")
 	token := fs.String("token", os.Getenv("RAILCAST_TOKEN"), "API token from the dashboard (defaults to $RAILCAST_TOKEN)")
 	baseURL := fs.String("base-url", "", "Railcast API base URL (default: "+defaultBaseURL+", override with $RAILCAST_BASE_URL)")
 	keyPath := fs.String("key", "", "where to save the private key (default: ./<app>.key)")
@@ -34,7 +40,7 @@ func cmdInit(args []string) {
 	*baseURL = resolveBaseURL(*baseURL)
 
 	var missing []string
-	if *appID == "" {
+	if *appName == "" {
 		missing = append(missing, "--app")
 	}
 	if *token == "" {
@@ -46,7 +52,7 @@ func cmdInit(args []string) {
 	}
 
 	if *keyPath == "" {
-		*keyPath = *appID + ".key"
+		*keyPath = *appName + ".key"
 	}
 	if _, err := os.Stat(*keyPath); err == nil {
 		fail("refusing to overwrite existing file at %s — pass a different --key path", *keyPath)
@@ -59,9 +65,9 @@ func cmdInit(args []string) {
 	pubB64 := base64.StdEncoding.EncodeToString(pub)
 	privB64 := base64.StdEncoding.EncodeToString(priv)
 
-	fmt.Printf("Creating %q and registering its signing key...\n", *appID)
+	fmt.Printf("Creating %q and registering its signing key...\n", *appName)
 
-	app, err := doCreateApp(*baseURL, *token, *appID, pubB64)
+	app, err := doCreateApp(*baseURL, *token, *appName, pubB64)
 	if err != nil {
 		fail("could not create the app: %v", err)
 	}
@@ -72,6 +78,8 @@ func cmdInit(args []string) {
 		fail("app was created, but failed to save the private key locally: %v\nSave it now — it will not be shown again:\n%s", err, privB64)
 	}
 
+	// app.ID is the real, server-generated id — this is what publish uses
+	// against the API, NOT the --app label.
 	if err := saveProjectConfig(projectConfig{App: app.ID, Key: *keyPath}); err != nil {
 		// Not fatal — the app and key both exist either way, this just
 		// means 'railcast publish' will need --app/--key spelled out.
@@ -92,11 +100,18 @@ func cmdInit(args []string) {
 		fmt.Sprintf("SUFeedURL: %s/%s/appcast.xml", strings.TrimRight(*baseURL, "/"), app.ID),
 		fmt.Sprintf("SUPublicEDKey: %s", app.SigningPublicKey),
 	)
+	if app.BetaToken != "" {
+		fmt.Println()
+		printBox(
+			"Beta channel feed (keep this URL private — the token is the only thing gating it)",
+			fmt.Sprintf("%s/%s/appcast.xml?channel=beta&token=%s", strings.TrimRight(*baseURL, "/"), app.ID, app.BetaToken),
+		)
+	}
 }
 
-func doCreateApp(baseURL, token, appID, publicKeyB64 string) (*createAppResponse, error) {
+func doCreateApp(baseURL, token, name, publicKeyB64 string) (*createAppResponse, error) {
 	payload, err := json.Marshal(map[string]string{
-		"id":                appID,
+		"name":                name,
 		"signing_public_key": publicKeyB64,
 	})
 	if err != nil {
@@ -125,9 +140,6 @@ func doCreateApp(baseURL, token, appID, publicKeyB64 string) (*createAppResponse
 			return nil, fmt.Errorf("%s", apiErr.Message)
 		}
 		return nil, fmt.Errorf("your account doesn't have access yet")
-	}
-	if resp.StatusCode == http.StatusConflict {
-		return nil, fmt.Errorf("an app called %q already exists — pick a different --app, or use its existing key with railcast publish", appID)
 	}
 	if resp.StatusCode != http.StatusCreated {
 		return nil, fmt.Errorf("server returned %d: %s", resp.StatusCode, string(body))
