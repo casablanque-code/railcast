@@ -24,6 +24,29 @@ async function seedUserAppAndToken(appId = "myapp-" + crypto.randomUUID()) {
   return { userId, token, appId };
 }
 
+async function publishVersion(token: string, appId: string, version: string, buildNumber: number) {
+  const filename = `MyApp-${version}.zip`;
+  const uploadRes = await SELF.fetch(`https://railcast.test/${appId}/upload/${filename}`, {
+    method: "PUT",
+    headers: { Authorization: `Bearer ${token}` },
+    body: `bytes for ${version}`,
+  });
+  const upload = await uploadRes.json<{ file_key: string; file_size: number }>();
+
+  return SELF.fetch(`https://railcast.test/${appId}/versions`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+    body: JSON.stringify({
+      version,
+      build_number: buildNumber,
+      file_key: upload.file_key,
+      file_size: upload.file_size,
+      sha256: "deadbeef",
+      signature: `sig-${version}`,
+    }),
+  });
+}
+
 describe("appcast.xml", () => {
   it("404s for an app with no published versions", async () => {
     const res = await SELF.fetch("https://railcast.test/unknown-app/appcast.xml");
@@ -119,34 +142,6 @@ describe("publish flow", () => {
     });
     expect(res.status).toBe(400);
   });
-
-  async function publishVersion(
-    token: string,
-    appId: string,
-    version: string,
-    buildNumber: number
-  ) {
-    const filename = `MyApp-${version}.zip`;
-    const uploadRes = await SELF.fetch(`https://railcast.test/${appId}/upload/${filename}`, {
-      method: "PUT",
-      headers: { Authorization: `Bearer ${token}` },
-      body: `bytes for ${version}`,
-    });
-    const upload = await uploadRes.json<{ file_key: string; file_size: number }>();
-
-    return SELF.fetch(`https://railcast.test/${appId}/versions`, {
-      method: "POST",
-      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
-      body: JSON.stringify({
-        version,
-        build_number: buildNumber,
-        file_key: upload.file_key,
-        file_size: upload.file_size,
-        sha256: "deadbeef",
-        signature: `sig-${version}`,
-      }),
-    });
-  }
 
   it("bumping to a higher build_number replaces what appcast.xml serves as latest", async () => {
     const { token, appId } = await seedUserAppAndToken();
