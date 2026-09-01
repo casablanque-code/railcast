@@ -20,11 +20,11 @@ func TestDoCreateApp_Success(t *testing.T) {
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 			t.Fatalf("failed to decode request body: %v", err)
 		}
-		if body["id"] != "myapp" || body["signing_public_key"] != "pubkey123" {
+		if body["name"] != "myapp" || body["signing_public_key"] != "pubkey123" {
 			t.Fatalf("unexpected request body: %+v", body)
 		}
 		w.WriteHeader(http.StatusCreated)
-		json.NewEncoder(w).Encode(createAppResponse{ID: "myapp", SigningPublicKey: "pubkey123"})
+		json.NewEncoder(w).Encode(createAppResponse{ID: "aZ3kQ9mN2pRt", Name: "myapp", SigningPublicKey: "pubkey123"})
 	}))
 	defer srv.Close()
 
@@ -32,7 +32,7 @@ func TestDoCreateApp_Success(t *testing.T) {
 	if err != nil {
 		t.Fatalf("doCreateApp returned an error: %v", err)
 	}
-	if app.ID != "myapp" || app.SigningPublicKey != "pubkey123" {
+	if app.ID != "aZ3kQ9mN2pRt" || app.SigningPublicKey != "pubkey123" {
 		t.Fatalf("unexpected response: %+v", app)
 	}
 }
@@ -53,21 +53,6 @@ func TestDoCreateApp_AccessNotGranted(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "doesn't have access yet") {
 		t.Fatalf("expected the server's message to surface, got: %v", err)
-	}
-}
-
-func TestDoCreateApp_Conflict(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusConflict)
-	}))
-	defer srv.Close()
-
-	_, err := doCreateApp(srv.URL, "test-token", "myapp", "pubkey123")
-	if err == nil {
-		t.Fatal("expected an error for a 409 response, got nil")
-	}
-	if !strings.Contains(err.Error(), "already exists") {
-		t.Fatalf("expected a friendly 'already exists' message, got: %v", err)
 	}
 }
 

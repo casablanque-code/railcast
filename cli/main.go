@@ -40,7 +40,7 @@ func printHelp() {
 	fmt.Println(`railcast — hosted appcast feeds and update delivery for Sparkle
 
 Usage:
-  railcast init --app <id> --token <token>
+  railcast init --app <name> --token <token>
       Create an app and generate its signing key. Start here.
 
   railcast publish --version <v> --build <n> --file <path> --token <token>

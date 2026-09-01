@@ -1,5 +1,6 @@
 import { SELF, env } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
+import { sha256Hex } from "./setup";
 
 describe("POST /api/waitlist", () => {
   it("rejects a missing email without touching the email provider", async () => {
@@ -58,7 +59,7 @@ describe("GET /api/me", () => {
     await env.DB.prepare(
       `INSERT INTO sessions (id, user_id, expires_at, created_at) VALUES (?, ?, ?, ?)`
     )
-      .bind(sessionId, userId, now - 60, now - 3600)
+      .bind(await sha256Hex(sessionId), userId, now - 60, now - 3600)
       .run();
 
     const res = await SELF.fetch("https://railcast.test/api/me", {
@@ -79,7 +80,7 @@ describe("GET /api/me", () => {
     await env.DB.prepare(
       `INSERT INTO sessions (id, user_id, expires_at, created_at) VALUES (?, ?, ?, ?)`
     )
-      .bind(sessionId, userId, now + 3600, now)
+      .bind(await sha256Hex(sessionId), userId, now + 3600, now)
       .run();
 
     const res = await SELF.fetch("https://railcast.test/api/me", {
@@ -102,7 +103,7 @@ describe("API tokens", () => {
     await env.DB.prepare(
       `INSERT INTO sessions (id, user_id, expires_at, created_at) VALUES (?, ?, ?, ?)`
     )
-      .bind(sessionId, userId, now + 3600, now)
+      .bind(await sha256Hex(sessionId), userId, now + 3600, now)
       .run();
     return { cookie: `session=${sessionId}`, userId };
   }
@@ -152,7 +153,7 @@ describe("API tokens", () => {
     const res = await SELF.fetch("https://railcast.test/api/apps", {
       method: "POST",
       headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
-      body: JSON.stringify({ id: "should-not-work", signing_public_key: "x" }),
+      body: JSON.stringify({ name: "should-not-work", signing_public_key: "x" }),
     });
     expect(res.status).toBe(401);
   });
@@ -188,35 +189,56 @@ describe("POST /api/apps", () => {
     await env.DB.prepare(
       `INSERT INTO sessions (id, user_id, expires_at, created_at) VALUES (?, ?, ?, ?)`
     )
-      .bind(sessionId, userId, now + 3600, now)
+      .bind(await sha256Hex(sessionId), userId, now + 3600, now)
       .run();
     return `session=${sessionId}`;
   }
 
-  it("rejects an invalid app id", async () => {
+  it("rejects a missing name", async () => {
     const cookie = await loggedInCookie();
     const res = await SELF.fetch("https://railcast.test/api/apps", {
       method: "POST",
       headers: { Cookie: cookie, "Content-Type": "application/json" },
-      body: JSON.stringify({ id: "not a valid slug!", signing_public_key: "key" }),
+      body: JSON.stringify({ signing_public_key: "key" }),
     });
     expect(res.status).toBe(400);
   });
 
-  it("creates an app and rejects a duplicate id", async () => {
+  it("generates a server-side id and ignores a client-supplied one", async () => {
+    const cookie = await loggedInCookie();
+    const res = await SELF.fetch("https://railcast.test/api/apps", {
+      method: "POST",
+      headers: { Cookie: cookie, "Content-Type": "application/json" },
+      // Even if something in the request tries to set an id directly, the
+      // server must ignore it — the public id is never client-chosen.
+      body: JSON.stringify({ id: "attacker-chosen-slug", name: "My App", signing_public_key: "pubkey" }),
+    });
+    expect(res.status).toBe(201);
+    const body = await res.json<{ id: string; name: string }>();
+    expect(body.id).toBeTruthy();
+    expect(body.id).not.toBe("attacker-chosen-slug");
+    expect(body.name).toBe("My App");
+  });
+
+  it("allows two apps with the same name — name is just a label, not a key", async () => {
     const cookie = await loggedInCookie();
     const create = () =>
       SELF.fetch("https://railcast.test/api/apps", {
         method: "POST",
         headers: { Cookie: cookie, "Content-Type": "application/json" },
-        body: JSON.stringify({ id: "unique-app", signing_public_key: "pubkey" }),
+        body: JSON.stringify({ name: "duplicate-name", signing_public_key: "pubkey" }),
       });
 
     const first = await create();
     expect(first.status).toBe(201);
+    const firstBody = await first.json<{ id: string }>();
 
     const second = await create();
-    expect(second.status).toBe(409);
+    expect(second.status).toBe(201);
+    const secondBody = await second.json<{ id: string }>();
+
+    // Different apps, different ids, same name — no collision anywhere.
+    expect(secondBody.id).not.toBe(firstBody.id);
   });
 
   it("blocks app creation for a logged-in user without granted access", async () => {
@@ -224,7 +246,7 @@ describe("POST /api/apps", () => {
     const res = await SELF.fetch("https://railcast.test/api/apps", {
       method: "POST",
       headers: { Cookie: cookie, "Content-Type": "application/json" },
-      body: JSON.stringify({ id: "gated-app", signing_public_key: "pubkey" }),
+      body: JSON.stringify({ name: "gated-app", signing_public_key: "pubkey" }),
     });
     expect(res.status).toBe(402);
   });
@@ -238,14 +260,16 @@ describe("POST /api/apps", () => {
     )
       .bind(userId, `${crypto.randomUUID()}@example.com`, now)
       .run();
-    await env.DB.prepare(`INSERT INTO api_tokens (token, user_id, created_at) VALUES (?, ?, ?)`)
-      .bind(token, userId, now)
+    await env.DB.prepare(
+      `INSERT INTO api_tokens (token, user_id, created_at, preview) VALUES (?, ?, ?, ?)`
+    )
+      .bind(await sha256Hex(token), userId, now, token.slice(0, 8))
       .run();
 
     const res = await SELF.fetch("https://railcast.test/api/apps", {
       method: "POST",
       headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
-      body: JSON.stringify({ id: "cli-created-app", signing_public_key: "pubkey" }),
+      body: JSON.stringify({ name: "cli-created-app", signing_public_key: "pubkey" }),
     });
     expect(res.status).toBe(201);
   });

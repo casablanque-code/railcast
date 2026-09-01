@@ -1,5 +1,6 @@
 import { SELF, env } from "cloudflare:test";
-import { beforeEach, describe, expect, it } from "vitest";
+import { describe, expect, it } from "vitest";
+import { sha256Hex } from "./setup";
 
 async function seedUserAppAndToken(appId = "myapp-" + crypto.randomUUID()) {
   const userId = crypto.randomUUID();
@@ -11,13 +12,13 @@ async function seedUserAppAndToken(appId = "myapp-" + crypto.randomUUID()) {
     .run();
 
   await env.DB.prepare(
-    `INSERT INTO apps (id, owner_email, owner_user_id, signing_public_key, created_at) VALUES (?, ?, ?, ?, ?)`
+    `INSERT INTO apps (id, owner_email, owner_user_id, signing_public_key, name, created_at) VALUES (?, ?, ?, ?, ?, ?)`
   )
-    .bind(appId, `${crypto.randomUUID()}@example.com`, userId, "fake-public-key", now)
+    .bind(appId, `${crypto.randomUUID()}@example.com`, userId, "fake-public-key", "Test App", now)
     .run();
 
   await env.DB.prepare(`INSERT INTO api_tokens (token, user_id, created_at) VALUES (?, ?, ?)`)
-    .bind(token, userId, now)
+    .bind(await sha256Hex(token), userId, now)
     .run();
 
   return { userId, token, appId };
@@ -27,6 +28,21 @@ describe("appcast.xml", () => {
   it("404s for an app with no published versions", async () => {
     const res = await SELF.fetch("https://railcast.test/unknown-app/appcast.xml");
     expect(res.status).toBe(404);
+  });
+
+  it("404s a beta channel request with no or wrong token", async () => {
+    const { appId } = await seedUserAppAndToken();
+    await env.DB.prepare(`UPDATE apps SET beta_token = ? WHERE id = ?`)
+      .bind("correct-token", appId)
+      .run();
+
+    const noToken = await SELF.fetch(`https://railcast.test/${appId}/appcast.xml?channel=beta`);
+    expect(noToken.status).toBe(404);
+
+    const wrongToken = await SELF.fetch(
+      `https://railcast.test/${appId}/appcast.xml?channel=beta&token=nope`
+    );
+    expect(wrongToken.status).toBe(404);
   });
 });
 
