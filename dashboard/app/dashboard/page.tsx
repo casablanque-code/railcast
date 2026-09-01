@@ -174,7 +174,18 @@ export default function DashboardPage() {
 
       <section>
         <h2 className="mb-3 text-sm font-semibold uppercase tracking-wide text-ink/50">
-          1. Get a token
+          1. Install the CLI
+        </h2>
+        <div className="card">
+          <pre className="overflow-x-auto rounded-md bg-ink px-4 py-3 font-mono text-xs text-paper">
+            curl -fsSL railcast.casablanque.com/install.sh | sh
+          </pre>
+        </div>
+      </section>
+
+      <section>
+        <h2 className="mb-3 text-sm font-semibold uppercase tracking-wide text-ink/50">
+          2. Get a token
         </h2>
 
         {newToken && (
@@ -207,7 +218,7 @@ export default function DashboardPage() {
 
       <section>
         <h2 className="mb-3 text-sm font-semibold uppercase tracking-wide text-ink/50">
-          2. Create an app from the CLI
+          3. Create an app from the CLI
         </h2>
         <div className="card">
           <p className="text-sm text-ink/70">

@@ -85,11 +85,13 @@ func cmdInit(args []string) {
 	fmt.Println("Tip: export RAILCAST_TOKEN=" + *token + " in your shell so you don't have to pass --token every time.")
 	fmt.Println()
 	fmt.Println("Next: publish a build from this directory")
-	fmt.Println("  railcast publish --version 1.0.0 --build 1 --file <path>")
+	fmt.Println("  railcast publish --version 1.0.0 --build 1 --file <path> --token <token>")
 	fmt.Println()
-	fmt.Println("Add these to your app's Info.plist:")
-	fmt.Printf("  SUFeedURL: %s/%s/appcast.xml\n", strings.TrimRight(*baseURL, "/"), app.ID)
-	fmt.Printf("  SUPublicEDKey: %s\n", app.SigningPublicKey)
+	printBox(
+		"Add these to your app's Info.plist",
+		fmt.Sprintf("SUFeedURL: %s/%s/appcast.xml", strings.TrimRight(*baseURL, "/"), app.ID),
+		fmt.Sprintf("SUPublicEDKey: %s", app.SigningPublicKey),
+	)
 }
 
 func doCreateApp(baseURL, token, appID, publicKeyB64 string) (*createAppResponse, error) {

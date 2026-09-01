@@ -46,11 +46,12 @@ export default function LandingPage() {
       <section className="border-t border-line py-10">
         <h2 className="text-xs font-semibold uppercase tracking-wide text-ink/50">How it works</h2>
         <p className="mt-4 text-sm text-ink/60">
-          Create an account, get a token, then two commands are the whole surface:
+          Install the CLI once, get a token, then two commands are the whole surface:
         </p>
         <pre className="mt-4 overflow-x-auto rounded-md bg-ink px-4 py-3 font-mono text-xs leading-relaxed text-paper">
-{`$ railcast init myapp
-$ railcast publish MyApp.zip`}
+{`$ curl -fsSL railcast.casablanque.com/install.sh | sh
+$ railcast init --app myapp --token <token>
+$ railcast publish --version 1.0.0 --build 1 --file MyApp.zip --token <token>`}
         </pre>
         <ul className="mt-3 space-y-1 font-mono text-xs text-ink/50">
           <li>✓ Signed</li>

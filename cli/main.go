@@ -40,15 +40,20 @@ func printHelp() {
 	fmt.Println(`railcast — hosted appcast feeds and update delivery for Sparkle
 
 Usage:
-  railcast init --app <id> --token <token>   Create an app and generate its signing key (start here)
-  railcast publish --version <v> --build <n> --file <path>
-                                              Sign and publish a build (reads app/key from
-                                              .railcast.json after 'init', if run from the same directory)
-  railcast keygen                            Generate a signing key without creating an app
-  railcast version                           Print the CLI version
-  railcast help                              Show this message
+  railcast init --app <id> --token <token>
+      Create an app and generate its signing key. Start here.
 
-Get a token at https://railcast.casablanque.com/dashboard
+  railcast publish --version <v> --build <n> --file <path> --token <token>
+      Sign and publish a build. Reads --app/--key from .railcast.json
+      automatically if you run it from the same directory as 'init'.
+
+  railcast keygen        Generate a signing key without creating an app
+  railcast version        Print the CLI version
+  railcast help           Show this message
+
+Every command needs a token — get one at https://railcast.casablanque.com/dashboard
+Set it once and skip retyping --token: export RAILCAST_TOKEN=<token>
+
 Run 'railcast <command> --help' for a command's full flag list.`)
 }
 
