@@ -267,7 +267,7 @@ describe("DELETE /api/apps/:id", () => {
     expect(body.apps.find((a) => a.id === appId)).toBeUndefined();
   });
 
-  it("404s deleting an app that belongs to someone else", async () => {
+  it("403s deleting an app that belongs to someone else", async () => {
     const owner = await seedUserAppAndToken();
 
     const attackerId = crypto.randomUUID();
@@ -286,7 +286,12 @@ describe("DELETE /api/apps/:id", () => {
       method: "DELETE",
       headers: { Cookie: `session=${attackerSession}` },
     });
-    expect(del.status).toBe(404);
+    // Distinct from the "app id doesn't exist" 404 elsewhere — matches
+    // requireAppOwnership's split (see worker/src/index.ts): the id space
+    // is a random 71-bit string, so a 403-vs-404 distinction here doesn't
+    // help enumeration, and consistency with the CLI's create/upload path
+    // matters more than uniformly hiding ownership.
+    expect(del.status).toBe(403);
 
     // and the app is still there
     const appcastRes = await SELF.fetch(`https://railcast.test/${owner.appId}/appcast.xml`);
