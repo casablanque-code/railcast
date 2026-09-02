@@ -29,7 +29,7 @@ run_worker_first = [
 [[d1_databases]]
 binding = "DB"
 database_name = "railcast"
-database_id = "6dc08ee1-4aa6-42db-92de-d4b78baf1556"
+database_id = "c6c4b8eb-8196-4202-b3c3-c48e4606f71b"
 
 [[r2_buckets]]
 binding = "BUILDS"

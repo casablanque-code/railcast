@@ -37,25 +37,6 @@ func TestDoCreateApp_Success(t *testing.T) {
 	}
 }
 
-func TestDoCreateApp_AccessNotGranted(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusPaymentRequired)
-		json.NewEncoder(w).Encode(apiErrorResponse{
-			Error:   "access_not_granted",
-			Message: "Your account doesn't have access yet — request early access at railcast.casablanque.com",
-		})
-	}))
-	defer srv.Close()
-
-	_, err := doCreateApp(srv.URL, "test-token", "myapp", "pubkey123")
-	if err == nil {
-		t.Fatal("expected an error for a 402 response, got nil")
-	}
-	if !strings.Contains(err.Error(), "doesn't have access yet") {
-		t.Fatalf("expected the server's message to surface, got: %v", err)
-	}
-}
-
 func TestDoCreateApp_UnexpectedStatus(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)
@@ -69,5 +50,24 @@ func TestDoCreateApp_UnexpectedStatus(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "500") {
 		t.Fatalf("expected the status code in the error, got: %v", err)
+	}
+}
+
+// No early-access gate exists anymore — a 402 (or any other non-201) isn't
+// special-cased, it just falls through to the generic "server returned N"
+// error like any other unexpected status.
+func TestDoCreateApp_402IsNotSpecialCased(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusPaymentRequired)
+		w.Write([]byte("not used for anything anymore"))
+	}))
+	defer srv.Close()
+
+	_, err := doCreateApp(srv.URL, "test-token", "myapp", "pubkey123")
+	if err == nil {
+		t.Fatal("expected an error for a 402 response, got nil")
+	}
+	if !strings.Contains(err.Error(), "402") {
+		t.Fatalf("expected the generic status-code error, got: %v", err)
 	}
 }

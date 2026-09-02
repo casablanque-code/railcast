@@ -58,11 +58,6 @@ export interface TokenPreview {
 export const api = {
   base: API_BASE,
   me: () => request<Me>("/api/me"),
-  requestEarlyAccess: (email: string) =>
-    request<{ ok: true; message: string }>("/api/waitlist", {
-      method: "POST",
-      body: JSON.stringify({ email }),
-    }),
   requestLink: (email: string) =>
     request<{ ok: true; message: string }>("/auth/request", {
       method: "POST",

@@ -13,6 +13,8 @@ interface VersionRow {
   sha256: string;
   signature: string;
   release_notes: string | null;
+  critical: number;
+  phased_rollout_interval: number | null;
   created_at: number;
 }
 
@@ -43,11 +45,16 @@ function renderAppcast(
       const description = r.release_notes
         ? `\n      <description><![CDATA[${r.release_notes}]]></description>`
         : "";
+      const critical = r.critical ? `\n      <sparkle:criticalUpdate/>` : "";
+      const phasedRollout =
+        r.phased_rollout_interval != null
+          ? `\n      <sparkle:phasedRolloutInterval>${r.phased_rollout_interval}</sparkle:phasedRolloutInterval>`
+          : "";
       return `    <item>
       <title>Version ${escapeXml(r.version)}</title>
       <pubDate>${pubDate}</pubDate>
       <sparkle:version>${r.build_number}</sparkle:version>
-      <sparkle:shortVersionString>${escapeXml(r.version)}</sparkle:shortVersionString>${description}
+      <sparkle:shortVersionString>${escapeXml(r.version)}</sparkle:shortVersionString>${description}${critical}${phasedRollout}
       <enclosure
         url="${escapeXml(downloadUrl)}"
         length="${r.file_size}"
@@ -82,43 +89,10 @@ function randomToken(): string {
 // ~71 bits of entropy (12 chars, base62) — plenty for a URL path segment
 // that's also checked for DB collision before use.
 const BASE62 = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
-// 256 isn't divisible by 62, so `byte % 62` would favor the low 8 symbols
-// slightly. Rejection sampling keeps every symbol equally likely instead —
-// draw bytes 248..255 are the biased tail (256 - 256%62 = 248) and get
-// discarded and redrawn.
-const BASE62_REJECT_ABOVE = 256 - (256 % BASE62.length); // 248
 function randomAppId(): string {
-  const out: string[] = [];
-  const buf = new Uint8Array(16);
-  while (out.length < 12) {
-    crypto.getRandomValues(buf);
-    for (const b of buf) {
-      if (b >= BASE62_REJECT_ABOVE) continue;
-      out.push(BASE62[b % BASE62.length]);
-      if (out.length === 12) break;
-    }
-  }
-  return out.join("");
-}
-
-// Constant-time string compare. Used for beta_token, which (unlike
-// sessions/api tokens) is intentionally stored and returned in plaintext —
-// it's a shareable link secret the owner needs to re-copy for testers, not
-// a login credential, so hashing it the way 0009 hashes sessions would just
-// make it unusable. The one thing worth fixing here is the comparison: a
-// plain `===` short-circuits on the first mismatched byte, which leaks
-// timing info about how many leading characters an attacker guessed right.
-function timingSafeEqual(a: string, b: string): boolean {
-  const aBytes = new TextEncoder().encode(a);
-  const bBytes = new TextEncoder().encode(b);
-  // Length itself isn't secret (tokens are a fixed, known length), but
-  // bail via a fixed-cost path rather than an early `return false`.
-  const len = Math.max(aBytes.length, bBytes.length, 1);
-  let diff = aBytes.length ^ bBytes.length;
-  for (let i = 0; i < len; i++) {
-    diff |= (aBytes[i] ?? 0) ^ (bBytes[i] ?? 0);
-  }
-  return diff === 0;
+  const bytes = new Uint8Array(12);
+  crypto.getRandomValues(bytes);
+  return Array.from(bytes, (b) => BASE62[b % BASE62.length]).join("");
 }
 
 async function sha256Hex(input: string): Promise<string> {
@@ -250,17 +224,6 @@ async function getUserIdFromBearerToken(request: Request, env: Env): Promise<str
   return row?.user_id ?? null;
 }
 
-// Early-access gate: until billing exists, access is granted manually
-// (see users.access_granted). Once a payment processor is wired up, only
-// what *sets* this flag changes (a webhook instead of a manual UPDATE) —
-// every call site that checks it stays the same.
-async function hasActiveAccess(userId: string, env: Env): Promise<boolean> {
-  const row = await env.DB.prepare(`SELECT access_granted FROM users WHERE id = ?`)
-    .bind(userId)
-    .first<{ access_granted: number }>();
-  return row?.access_granted === 1;
-}
-
 async function sendMagicLinkEmail(env: Env, email: string, link: string): Promise<void> {
   const resp = await fetch("https://api.resend.com/emails", {
     method: "POST",
@@ -279,59 +242,6 @@ async function sendMagicLinkEmail(env: Env, email: string, link: string): Promis
     const text = await resp.text();
     throw new Error(`Resend API error (${resp.status}): ${text}`);
   }
-}
-
-async function sendWaitlistNotification(env: Env, email: string): Promise<void> {
-  const resp = await fetch("https://api.resend.com/emails", {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${env.RESEND_API_KEY}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      from: "Railcast <onboarding@resend.dev>",
-      to: ["casablanque@proton.me"],
-      subject: "New early access request",
-      html: `<p>${escapeXml(email)} requested early access to Railcast.</p>`,
-    }),
-  });
-  if (!resp.ok) {
-    const text = await resp.text();
-    throw new Error(`Resend API error (${resp.status}): ${text}`);
-  }
-}
-
-async function handleWaitlistRequest(request: Request, env: Env): Promise<Response> {
-  let body: { email?: string };
-  try {
-    body = await request.json();
-  } catch {
-    return new Response("Invalid JSON", { status: 400 });
-  }
-
-  const email = body.email?.trim().toLowerCase();
-  if (!email || !email.includes("@")) {
-    return new Response("Valid email required", { status: 400 });
-  }
-
-  const ip = clientIp(request);
-  if (
-    (await rateLimited(env, `waitlist:ip:${ip}`, 10, 3600)) ||
-    (await rateLimited(env, `waitlist:email:${email}`, 3, 3600))
-  ) {
-    return new Response("Too many requests — try again later", { status: 429 });
-  }
-
-  await env.DB.prepare(`INSERT INTO waitlist (id, email, created_at) VALUES (?, ?, unixepoch())`)
-    .bind(crypto.randomUUID(), email)
-    .run();
-
-  await sendWaitlistNotification(env, email);
-
-  return new Response(JSON.stringify({ ok: true, message: "Thanks — we'll be in touch" }), {
-    status: 200,
-    headers: { "Content-Type": "application/json" },
-  });
 }
 
 async function handleAuthRequest(request: Request, env: Env): Promise<Response> {
@@ -481,16 +391,6 @@ async function handleApiCreateApp(request: Request, env: Env): Promise<Response>
     return jsonResponse({ error: "bad_origin" }, 403);
   }
 
-  if (!(await hasActiveAccess(user.id, env))) {
-    return jsonResponse(
-      {
-        error: "access_not_granted",
-        message: "Your account doesn't have access yet — request early access at railcast.casablanque.com",
-      },
-      402
-    );
-  }
-
   let body: { name?: string; signing_public_key?: string };
   try {
     body = await request.json();
@@ -604,12 +504,11 @@ async function handleApiDeleteApp(request: Request, env: Env, appId: string): Pr
     .bind(appId)
     .first<{ owner_user_id: string }>();
 
-  // Matches requireAppOwnership's split below (see its comment): the id
-  // space is a random 71-bit string, so telling a wrong-id request apart
-  // from a not-your-app request doesn't help enumeration either way — we'd
-  // previously merged both into 404 here while requireAppOwnership split
-  // them, which was an inconsistency rather than a deliberate choice.
   if (!appRow) {
+    // Distinct from 403 on purpose, same reasoning as requireAppOwnership:
+    // the id space is a random 71-bit string, so a 404-vs-403 split here
+    // doesn't meaningfully help enumeration, and it's the same signal the
+    // CLI's upload/versions endpoints already give for a bad id.
     return jsonResponse({ error: "not_found" }, 404);
   }
   if (appRow.owner_user_id !== user.id) {
@@ -702,6 +601,8 @@ interface CreateVersionBody {
   sha256?: string;
   signature?: string;
   release_notes?: string;
+  critical?: boolean;
+  phased_rollout_interval?: number;
 }
 
 async function handleCreateVersion(request: Request, env: Env, appId: string): Promise<Response> {
@@ -717,12 +618,23 @@ async function handleCreateVersion(request: Request, env: Env, appId: string): P
 
   const { version, build_number, file_key, file_size, sha256, signature, release_notes } = body;
   const channel = body.channel ?? "stable";
+  const critical = body.critical ? 1 : 0;
+  const phasedRolloutInterval = body.phased_rollout_interval;
 
   if (!version || !build_number || !file_key || !file_size || !sha256 || !signature) {
     return new Response(
       "Missing required fields: version, build_number, file_key, file_size, sha256, signature",
       { status: 400 }
     );
+  }
+
+  if (
+    phasedRolloutInterval !== undefined &&
+    (!Number.isFinite(phasedRolloutInterval) || phasedRolloutInterval < 0)
+  ) {
+    return new Response("phased_rollout_interval must be a non-negative number of seconds", {
+      status: 400,
+    });
   }
 
   if (!file_key.startsWith(`${appId}/`)) {
@@ -755,8 +667,8 @@ async function handleCreateVersion(request: Request, env: Env, appId: string): P
 
   await env.DB.prepare(
     `INSERT INTO versions
-      (app_id, channel, version, build_number, file_key, file_size, sha256, signature, release_notes, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      (app_id, channel, version, build_number, file_key, file_size, sha256, signature, release_notes, critical, phased_rollout_interval, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
   )
     .bind(
       appId,
@@ -768,6 +680,8 @@ async function handleCreateVersion(request: Request, env: Env, appId: string): P
       sha256,
       signature,
       release_notes ?? null,
+      critical,
+      phasedRolloutInterval ?? null,
       createdAt
     )
     .run();
@@ -797,7 +711,7 @@ async function handleAppcast(request: Request, env: Env, appId: string): Promise
       .first<{ beta_token: string | null }>();
 
     const suppliedToken = url.searchParams.get("token") ?? "";
-    if (!appRow || !appRow.beta_token || !timingSafeEqual(suppliedToken, appRow.beta_token)) {
+    if (!appRow || !appRow.beta_token || suppliedToken !== appRow.beta_token) {
       // Same 404 as "not found" — don't reveal whether the app/channel
       // exists to someone without the token.
       return new Response("Not found", { status: 404 });
@@ -805,7 +719,7 @@ async function handleAppcast(request: Request, env: Env, appId: string): Promise
   }
 
   const { results } = await env.DB.prepare(
-    `SELECT version, build_number, file_key, file_size, sha256, signature, release_notes, created_at
+    `SELECT version, build_number, file_key, file_size, sha256, signature, release_notes, critical, phased_rollout_interval, created_at
      FROM versions
      WHERE app_id = ? AND channel = ?
      ORDER BY build_number DESC
@@ -837,9 +751,6 @@ export default {
 
     if (url.pathname === "/logout" && request.method === "GET") {
       return handleLogout();
-    }
-    if (url.pathname === "/api/waitlist" && request.method === "POST") {
-      return handleWaitlistRequest(request, env);
     }
     if (url.pathname === "/auth/request" && request.method === "POST") {
       return handleAuthRequest(request, env);

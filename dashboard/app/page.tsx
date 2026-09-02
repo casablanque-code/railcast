@@ -1,5 +1,4 @@
 import type { Metadata } from "next";
-import { EarlyAccessForm } from "./EarlyAccessForm";
 
 export const metadata: Metadata = {
   title: "Railcast — the backend Sparkle needs",
@@ -18,7 +17,9 @@ export default function LandingPage() {
           Push a build, get back a signed, hosted <span className="font-mono">appcast.xml</span>.
           Nothing to run, nothing to keep alive.
         </p>
-        <EarlyAccessForm buttonLabel="Get early access" />
+        <a href="/login" className="btn mt-6 inline-block">
+          Get started
+        </a>
       </section>
 
       <section className="border-t border-line py-10">
@@ -69,16 +70,24 @@ $ railcast publish --version 1.0.0 --build 1 --file MyApp.zip --token <token>`}
       </section>
 
       <section className="border-t border-line py-10">
-        <h2 className="text-xs font-semibold uppercase tracking-wide text-ink/50">Pricing</h2>
-        <p className="mt-4 text-sm text-ink/70">Early access. Pricing announced soon.</p>
-        <EarlyAccessForm buttonLabel="Request access" />
+        <h2 className="text-xs font-semibold uppercase tracking-wide text-ink/50">Open source</h2>
+        <p className="mt-4 text-sm text-ink/70">
+          Free to use, and free to self-host. Source on{" "}
+          <a
+            href="https://github.com/casablanque-code/railcast"
+            className="underline hover:text-ink"
+          >
+            GitHub
+          </a>
+          .
+        </p>
       </section>
 
       <footer className="border-t border-line py-8 text-xs text-ink/40">
         <p>
-          In active development. casablanque@proton.me ·{" "}
+          casablanque@proton.me ·{" "}
           <a href="/login" className="hover:text-ink/70 hover:underline">
-            Already have access? Log in
+            Log in
           </a>
         </p>
       </footer>

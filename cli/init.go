@@ -21,11 +21,6 @@ type createAppResponse struct {
 	BetaToken        string `json:"beta_token"`
 }
 
-type apiErrorResponse struct {
-	Error   string `json:"error"`
-	Message string `json:"message"`
-}
-
 func cmdInit(args []string) {
 	fs := flag.NewFlagSet("init", flag.ExitOnError)
 	// This is a local label only now — the server generates the real,
@@ -134,13 +129,6 @@ func doCreateApp(baseURL, token, name, publicKeyB64 string) (*createAppResponse,
 
 	body, _ := io.ReadAll(resp.Body)
 
-	if resp.StatusCode == http.StatusPaymentRequired {
-		var apiErr apiErrorResponse
-		if err := json.Unmarshal(body, &apiErr); err == nil && apiErr.Message != "" {
-			return nil, fmt.Errorf("%s", apiErr.Message)
-		}
-		return nil, fmt.Errorf("your account doesn't have access yet")
-	}
 	if resp.StatusCode != http.StatusCreated {
 		return nil, fmt.Errorf("server returned %d: %s", resp.StatusCode, string(body))
 	}

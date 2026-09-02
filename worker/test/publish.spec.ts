@@ -148,6 +148,84 @@ describe("publish flow", () => {
     expect(xml).toContain('sparkle:edSignature="fake-signature-b64"');
   });
 
+  it("marks a version critical and omits the tag when not set", async () => {
+    const { token, appId } = await seedUserAppAndToken();
+
+    async function publish(build: number, critical: boolean) {
+      const uploadRes = await SELF.fetch(`https://railcast.test/${appId}/upload/v${build}.zip`, {
+        method: "PUT",
+        headers: { Authorization: `Bearer ${token}` },
+        body: "fake build bytes",
+      });
+      const upload = await uploadRes.json<{ file_key: string; file_size: number }>();
+      return SELF.fetch(`https://railcast.test/${appId}/versions`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+        body: JSON.stringify({
+          version: `1.0.${build}`,
+          build_number: build,
+          file_key: upload.file_key,
+          file_size: upload.file_size,
+          sha256: "deadbeef",
+          signature: "fake-signature-b64",
+          critical,
+        }),
+      });
+    }
+
+    expect((await publish(1, false)).status).toBe(201);
+    expect((await publish(2, true)).status).toBe(201);
+
+    const xml = await (await SELF.fetch(`https://railcast.test/${appId}/appcast.xml`)).text();
+    // Only the latest 10 builds are served and build 2 (critical) sorts
+    // first — assert the tag appears exactly once, next to that item.
+    expect(xml.match(/<sparkle:criticalUpdate\/>/g)?.length).toBe(1);
+  });
+
+  it("echoes phased_rollout_interval into the appcast and validates it server-side", async () => {
+    const { token, appId } = await seedUserAppAndToken();
+
+    const uploadRes = await SELF.fetch(`https://railcast.test/${appId}/upload/rollout.zip`, {
+      method: "PUT",
+      headers: { Authorization: `Bearer ${token}` },
+      body: "fake build bytes",
+    });
+    const upload = await uploadRes.json<{ file_key: string; file_size: number }>();
+
+    const bad = await SELF.fetch(`https://railcast.test/${appId}/versions`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+      body: JSON.stringify({
+        version: "1.1.0",
+        build_number: 1,
+        file_key: upload.file_key,
+        file_size: upload.file_size,
+        sha256: "deadbeef",
+        signature: "fake-signature-b64",
+        phased_rollout_interval: -1,
+      }),
+    });
+    expect(bad.status).toBe(400);
+
+    const good = await SELF.fetch(`https://railcast.test/${appId}/versions`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+      body: JSON.stringify({
+        version: "1.1.0",
+        build_number: 1,
+        file_key: upload.file_key,
+        file_size: upload.file_size,
+        sha256: "deadbeef",
+        signature: "fake-signature-b64",
+        phased_rollout_interval: 86400,
+      }),
+    });
+    expect(good.status).toBe(201);
+
+    const xml = await (await SELF.fetch(`https://railcast.test/${appId}/appcast.xml`)).text();
+    expect(xml).toContain("<sparkle:phasedRolloutInterval>86400</sparkle:phasedRolloutInterval>");
+  });
+
   it("rejects a version pointing at a file_key that was never uploaded", async () => {
     const { token, appId } = await seedUserAppAndToken();
 

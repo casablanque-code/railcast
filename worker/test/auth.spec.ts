@@ -2,26 +2,6 @@ import { SELF, env } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 import { sha256Hex } from "./setup";
 
-describe("POST /api/waitlist", () => {
-  it("rejects a missing email without touching the email provider", async () => {
-    const res = await SELF.fetch("https://railcast.test/api/waitlist", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({}),
-    });
-    expect(res.status).toBe(400);
-  });
-
-  it("rejects invalid JSON", async () => {
-    const res = await SELF.fetch("https://railcast.test/api/waitlist", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: "not json",
-    });
-    expect(res.status).toBe(400);
-  });
-});
-
 describe("POST /auth/request", () => {
   it("rejects a missing email without touching the email provider", async () => {
     const res = await SELF.fetch("https://railcast.test/auth/request", {
@@ -177,14 +157,12 @@ describe("API tokens", () => {
 });
 
 describe("POST /api/apps", () => {
-  async function loggedInCookie(accessGranted = 1): Promise<string> {
+  async function loggedInCookie(): Promise<string> {
     const userId = crypto.randomUUID();
     const sessionId = "session-" + crypto.randomUUID();
     const now = Math.floor(Date.now() / 1000);
-    await env.DB.prepare(
-      `INSERT INTO users (id, email, created_at, access_granted) VALUES (?, ?, ?, ?)`
-    )
-      .bind(userId, `${crypto.randomUUID()}@example.com`, now, accessGranted)
+    await env.DB.prepare(`INSERT INTO users (id, email, created_at) VALUES (?, ?, ?)`)
+      .bind(userId, `${crypto.randomUUID()}@example.com`, now)
       .run();
     await env.DB.prepare(
       `INSERT INTO sessions (id, user_id, expires_at, created_at) VALUES (?, ?, ?, ?)`
@@ -241,23 +219,11 @@ describe("POST /api/apps", () => {
     expect(secondBody.id).not.toBe(firstBody.id);
   });
 
-  it("blocks app creation for a logged-in user without granted access", async () => {
-    const cookie = await loggedInCookie(0);
-    const res = await SELF.fetch("https://railcast.test/api/apps", {
-      method: "POST",
-      headers: { Cookie: cookie, "Content-Type": "application/json" },
-      body: JSON.stringify({ name: "gated-app", signing_public_key: "pubkey" }),
-    });
-    expect(res.status).toBe(402);
-  });
-
   it("accepts a bearer API token in place of a session cookie", async () => {
     const userId = crypto.randomUUID();
     const token = "cli-token-" + crypto.randomUUID();
     const now = Math.floor(Date.now() / 1000);
-    await env.DB.prepare(
-      `INSERT INTO users (id, email, created_at, access_granted) VALUES (?, ?, ?, 1)`
-    )
+    await env.DB.prepare(`INSERT INTO users (id, email, created_at) VALUES (?, ?, ?)`)
       .bind(userId, `${crypto.randomUUID()}@example.com`, now)
       .run();
     await env.DB.prepare(
