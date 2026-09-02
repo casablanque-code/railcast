@@ -46,6 +46,8 @@ Usage:
   railcast publish --version <v> --build <n> --file <path> --token <token>
       Sign and publish a build. Reads --app/--key from .railcast.json
       automatically if you run it from the same directory as 'init'.
+      Add --critical or --phased-rollout <seconds> for Sparkle's staged
+      rollout controls — see 'railcast publish --help' for the full list.
 
   railcast keygen        Generate a signing key without creating an app
   railcast version        Print the CLI version

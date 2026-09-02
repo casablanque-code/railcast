@@ -44,8 +44,8 @@ func cmdPublish(args []string) {
 	channel := fs.String("channel", "stable", "release channel: stable | beta")
 	notes := fs.String("notes", "", "release notes (plain text or markdown)")
 	notesFile := fs.String("notes-file", "", "path to a release notes file (overrides --notes)")
-	critical := fs.Bool("critical", false, "mark this update as critical — Sparkle makes it hard for users to skip")
-	phasedRolloutInterval := fs.Int("phased-rollout-interval", 0, "seconds between rollout groups (Sparkle hardcodes 7 groups, so e.g. 86400 = fully rolled out over 7 days); 0 disables phased rollout. Ignored by Sparkle when --critical is set.")
+	critical := fs.Bool("critical", false, "mark this update as critical (Sparkle: sparkle:criticalUpdate)")
+	phasedRollout := fs.Int("phased-rollout", 0, "phased rollout interval in seconds between install groups, 0 to disable (Sparkle: sparkle:phasedRolloutInterval)")
 	keyPath := fs.String("key", keyDefault, "path to the private signing key — defaults to the one from 'railcast init' in this directory")
 	token := fs.String("token", os.Getenv("RAILCAST_TOKEN"), "API token (defaults to $RAILCAST_TOKEN)")
 	baseURL := fs.String("base-url", "", "Railcast API base URL (default: "+defaultBaseURL+", override with $RAILCAST_BASE_URL)")
@@ -74,6 +74,10 @@ func cmdPublish(args []string) {
 	if len(missing) > 0 {
 		fmt.Printf("missing required flags: %s\n", strings.Join(missing, ", "))
 		os.Exit(1)
+	}
+
+	if *phasedRollout < 0 {
+		fail("--phased-rollout must be 0 or a positive number of seconds")
 	}
 
 	if *notesFile != "" {
@@ -107,11 +111,8 @@ func cmdPublish(args []string) {
 	if *critical {
 		fmt.Println("  critical: yes")
 	}
-	if *phasedRolloutInterval > 0 {
-		if *critical {
-			fmt.Println("  warning: --phased-rollout-interval is set but Sparkle ignores phased rollout for critical updates")
-		}
-		fmt.Printf("  phased rollout: %ds between groups (~%dd to full rollout)\n", *phasedRolloutInterval, *phasedRolloutInterval*7/86400)
+	if *phasedRollout > 0 {
+		fmt.Printf("  phased rollout: every %ds\n", *phasedRollout)
 	}
 
 	fmt.Println("Uploading build...")
@@ -123,19 +124,19 @@ func cmdPublish(args []string) {
 
 	fmt.Println("Registering version...")
 	result, err := doCreateVersion(createVersionRequest{
-		BaseURL:     *baseURL,
-		Token:       *token,
-		AppID:       *appID,
-		Version:     *version,
-		BuildNumber: *buildNumber,
-		Channel:     *channel,
-		FileKey:     upload.FileKey,
-		FileSize:    upload.FileSize,
-		SHA256:                sha256Hex,
-		Signature:             signatureB64,
-		Notes:                 *notes,
-		Critical:              *critical,
-		PhasedRolloutInterval: *phasedRolloutInterval,
+		BaseURL:       *baseURL,
+		Token:         *token,
+		AppID:         *appID,
+		Version:       *version,
+		BuildNumber:   *buildNumber,
+		Channel:       *channel,
+		FileKey:       upload.FileKey,
+		FileSize:      upload.FileSize,
+		SHA256:        sha256Hex,
+		Signature:     signatureB64,
+		Notes:         *notes,
+		Critical:      *critical,
+		PhasedRollout: *phasedRollout,
 	})
 	if err != nil {
 		fail("registering version failed: %v", err)
@@ -207,19 +208,19 @@ func doUpload(baseURL, token, appID, filename string, data []byte) (*uploadRespo
 }
 
 type createVersionRequest struct {
-	BaseURL               string
-	Token                 string
-	AppID                 string
-	Version               string
-	BuildNumber           int
-	Channel               string
-	FileKey               string
-	FileSize              int64
-	SHA256                string
-	Signature             string
-	Notes                 string
-	Critical              bool
-	PhasedRolloutInterval int
+	BaseURL       string
+	Token         string
+	AppID         string
+	Version       string
+	BuildNumber   int
+	Channel       string
+	FileKey       string
+	FileSize      int64
+	SHA256        string
+	Signature     string
+	Notes         string
+	Critical      bool
+	PhasedRollout int
 }
 
 func doCreateVersion(r createVersionRequest) (*createVersionResponse, error) {
@@ -236,8 +237,8 @@ func doCreateVersion(r createVersionRequest) (*createVersionResponse, error) {
 	if r.Critical {
 		payload["critical"] = true
 	}
-	if r.PhasedRolloutInterval > 0 {
-		payload["phased_rollout_interval"] = r.PhasedRolloutInterval
+	if r.PhasedRollout > 0 {
+		payload["phased_rollout_interval"] = r.PhasedRollout
 	}
 	body, err := json.Marshal(payload)
 	if err != nil {
