@@ -2,6 +2,8 @@
 
 import { FormEvent, useEffect, useState } from "react";
 import { api, ApiError, type App, type Me, type TokenPreview } from "@/lib/api";
+import { CommandBlock } from "../CommandBlock";
+import { CopyButton } from "../CopyButton";
 
 const INLINE_LIMIT = 3;
 
@@ -210,9 +212,7 @@ export default function DashboardPage() {
           1. Install the CLI
         </h2>
         <div className="card">
-          <pre className="overflow-x-auto rounded-md bg-ink px-4 py-3 font-mono text-xs text-paper">
-            curl -fsSL railcast.casablanque.com/install.sh | sh
-          </pre>
+          <CommandBlock command="curl -fsSL railcast.casablanque.com/install.sh | sh" />
         </div>
       </section>
 
@@ -226,7 +226,13 @@ export default function DashboardPage() {
             <p className="text-sm font-medium text-ink">
               Token copied to your clipboard — save it now, it won&apos;t be shown again:
             </p>
-            <p className="mt-2 break-all font-mono text-sm text-ink">{newToken}</p>
+            <div className="mt-2 flex items-start justify-between gap-3">
+              <p className="break-all font-mono text-sm text-ink">{newToken}</p>
+              <CopyButton
+                text={newToken}
+                className="mt-0.5 text-ink/40 hover:bg-ink/5 hover:text-ink"
+              />
+            </div>
           </div>
         )}
 
@@ -258,9 +264,10 @@ export default function DashboardPage() {
             This generates a signing key on your machine and registers the app in one step —
             nothing else to fill in here.
           </p>
-          <pre className="mt-3 overflow-x-auto rounded-md bg-ink px-4 py-3 font-mono text-xs text-paper">
-            railcast init --app myapp --token {newToken ?? "<token from above>"}
-          </pre>
+          <CommandBlock
+            className="mt-3"
+            command={`railcast init --app myapp --token ${newToken ?? "<token from above>"}`}
+          />
         </div>
       </section>
 

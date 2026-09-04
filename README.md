@@ -19,6 +19,11 @@ Solo and small-team macOS developers shipping a native app who want Sparkle's up
 
 ## Status
 
-Early — in active development, not yet generally available. WinSparkle and Velopack support (Windows / .NET) are planned once the Sparkle path is proven out.
+In active development. Sparkle support is live; WinSparkle and Velopack (Windows / .NET) are
+planned next.
 
-Interested? Reach out: **casablanque@proton.me**
+Free and open source under [AGPL-3.0](./LICENSE) — self-host it, or use the hosted instance at
+[railcast.casablanque.com](https://railcast.casablanque.com). No account gating, no paid tier.
+Donations are welcome but never required — see the site for links.
+
+Questions or bugs: **casablanque@proton.me**

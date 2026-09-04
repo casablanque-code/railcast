@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import { CommandBlock } from "./CommandBlock";
 
 export const metadata: Metadata = {
   title: "Railcast — the backend Sparkle needs",
@@ -49,11 +50,11 @@ export default function LandingPage() {
         <p className="mt-4 text-sm text-ink/60">
           Install the CLI once, get a token, then two commands are the whole surface:
         </p>
-        <pre className="mt-4 overflow-x-auto rounded-md bg-ink px-4 py-3 font-mono text-xs leading-relaxed text-paper">
-{`$ curl -fsSL railcast.casablanque.com/install.sh | sh
-$ railcast init --app myapp --token <token>
-$ railcast publish --version 1.0.0 --build 1 --file MyApp.zip --token <token>`}
-        </pre>
+        <div className="mt-4 space-y-2">
+          <CommandBlock command="curl -fsSL railcast.casablanque.com/install.sh | sh" />
+          <CommandBlock command="railcast init --app myapp --token <token>" />
+          <CommandBlock command="railcast publish --version 1.0.0 --build 1 --file MyApp.zip --token <token>" />
+        </div>
         <ul className="mt-3 space-y-1 font-mono text-xs text-ink/50">
           <li>✓ Signed</li>
           <li>✓ Uploaded</li>
