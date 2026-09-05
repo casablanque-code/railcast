@@ -116,7 +116,7 @@ func cmdPublish(args []string) {
 	}
 
 	fmt.Println("Uploading build...")
-	upload, err := doUpload(*baseURL, *token, *appID, filename, fileBytes)
+	upload, err := doUpload(*baseURL, *token, *appID, filename, sha256Hex, fileBytes)
 	if err != nil {
 		fail("upload failed: %v", err)
 	}
@@ -171,7 +171,7 @@ func loadPrivateKey(path string) (ed25519.PrivateKey, error) {
 	return nil, fmt.Errorf("no valid ed25519 private key (base64, %d bytes) found in %s", ed25519.PrivateKeySize, path)
 }
 
-func doUpload(baseURL, token, appID, filename string, data []byte) (*uploadResponse, error) {
+func doUpload(baseURL, token, appID, filename, sha256Hex string, data []byte) (*uploadResponse, error) {
 	url := fmt.Sprintf("%s/%s/upload/%s", strings.TrimRight(baseURL, "/"), appID, filename)
 	req, err := http.NewRequest(http.MethodPut, url, bytes.NewReader(data))
 	if err != nil {
@@ -179,6 +179,7 @@ func doUpload(baseURL, token, appID, filename string, data []byte) (*uploadRespo
 	}
 	req.Header.Set("Authorization", "Bearer "+token)
 	req.Header.Set("Content-Type", "application/octet-stream")
+	req.Header.Set("X-Sha256", sha256Hex)
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -191,6 +192,12 @@ func doUpload(baseURL, token, appID, filename string, data []byte) (*uploadRespo
 		return nil, fmt.Errorf(
 			"no app with id %q — --app takes the id from .railcast.json (or the one printed by 'railcast init'), not the name you gave --app at init time",
 			appID,
+		)
+	}
+	if resp.StatusCode == http.StatusConflict {
+		return nil, fmt.Errorf(
+			"%q was already published under this app — rename the file or bump the version/build so it gets a new filename",
+			filename,
 		)
 	}
 	if resp.StatusCode != http.StatusOK {

@@ -98,8 +98,14 @@ function randomAppId(): string {
 async function sha256Hex(input: string): Promise<string> {
   const data = new TextEncoder().encode(input);
   const digest = await crypto.subtle.digest("SHA-256", data);
-  return Array.from(new Uint8Array(digest), (b) => b.toString(16).padStart(2, "0")).join("");
+  return bufferToHex(digest);
 }
+
+function bufferToHex(buffer: ArrayBuffer): string {
+  return Array.from(new Uint8Array(buffer), (b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+const SHA256_HEX_RE = /^[0-9a-f]{64}$/i;
 
 // ---------- Rate limiting (D1-backed, coarse but enough to stop spam) ----------
 
@@ -583,8 +589,42 @@ async function handleUpload(
     return new Response("Missing body", { status: 400 });
   }
 
+  // Required so R2 verifies the bytes as they're written, not after the
+  // fact — without this, handleCreateVersion below has nothing to check
+  // the client-claimed sha256 against, since R2 only records a checksum
+  // for a hash algorithm it was actually asked to verify at put() time.
+  const claimedSha256 = request.headers.get("X-Sha256")?.toLowerCase() ?? "";
+  if (!SHA256_HEX_RE.test(claimedSha256)) {
+    return new Response("Missing or malformed X-Sha256 header (expected 64 hex chars)", {
+      status: 400,
+    });
+  }
+
   const fileKey = `${appId}/${filename}`;
-  const obj = await env.BUILDS.put(fileKey, request.body);
+
+  // A file_key that's already attached to a published version is
+  // immutable — otherwise the appcast could keep pointing at a signed,
+  // checksummed version record while the bytes underneath it silently
+  // change on a later re-upload to the same filename.
+  const alreadyPublished = await env.DB.prepare(`SELECT 1 FROM versions WHERE file_key = ?`)
+    .bind(fileKey)
+    .first();
+  if (alreadyPublished) {
+    return new Response(
+      "This file_key is already attached to a published version — use a new filename",
+      { status: 409 }
+    );
+  }
+
+  let obj;
+  try {
+    obj = await env.BUILDS.put(fileKey, request.body, { sha256: claimedSha256 });
+  } catch {
+    return new Response("Uploaded bytes don't match the X-Sha256 header", { status: 400 });
+  }
+  if (!obj) {
+    return new Response("Uploaded bytes don't match the X-Sha256 header", { status: 400 });
+  }
 
   return new Response(JSON.stringify({ file_key: fileKey, file_size: obj?.size ?? null }), {
     status: 200,
@@ -628,6 +668,10 @@ async function handleCreateVersion(request: Request, env: Env, appId: string): P
     );
   }
 
+  if (!SHA256_HEX_RE.test(sha256)) {
+    return new Response("sha256 must be 64 hex characters", { status: 400 });
+  }
+
   if (
     phasedRolloutInterval !== undefined &&
     (!Number.isFinite(phasedRolloutInterval) || phasedRolloutInterval < 0)
@@ -643,6 +687,25 @@ async function handleCreateVersion(request: Request, env: Env, appId: string): P
   const head = await env.BUILDS.head(file_key);
   if (!head) {
     return new Response("file_key not found in storage — upload first", { status: 400 });
+  }
+
+  // The single real integrity check: not "does the client's sha256 look
+  // right", but "does it match what R2 itself verified while storing the
+  // bytes". head.checksums.sha256 only exists because handleUpload passed
+  // sha256 as a put() option — if it's missing, either an old CLI skipped
+  // that header, or something wrote to this key outside our upload path.
+  // Either way we can't vouch for the file, so refuse rather than trust
+  // the client's claim at face value.
+  if (!head.checksums.sha256) {
+    return new Response(
+      "No verified checksum on file — re-upload via the current CLI (upload must set X-Sha256)",
+      { status: 400 }
+    );
+  }
+  if (bufferToHex(head.checksums.sha256) !== sha256.toLowerCase()) {
+    return new Response("sha256 does not match the uploaded file's verified checksum", {
+      status: 400,
+    });
   }
 
   // Sparkle (and most updaters) trust build_number as a strictly increasing

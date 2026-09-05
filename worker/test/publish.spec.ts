@@ -24,14 +24,31 @@ async function seedUserAppAndToken(appId = "myapp-" + crypto.randomUUID()) {
   return { userId, token, appId };
 }
 
+// Uploads bytes the way the real CLI does: computes the real sha256
+// client-side and sends it via X-Sha256, which the server now hands to R2
+// to verify as the bytes stream in. Tests that need a working upload
+// should go through this rather than faking a body/hash pair, since the
+// server no longer trusts a hash it hasn't verified.
+async function uploadBuild(token: string, appId: string, filename: string, body: string) {
+  const sha256 = await sha256Hex(body);
+  const res = await SELF.fetch(`https://railcast.test/${appId}/upload/${filename}`, {
+    method: "PUT",
+    headers: { Authorization: `Bearer ${token}`, "X-Sha256": sha256 },
+    body,
+  });
+  const json =
+    res.status === 200 ? await res.json<{ file_key: string; file_size: number }>() : null;
+  return { res, sha256, file_key: json?.file_key, file_size: json?.file_size };
+}
+
 async function publishVersion(token: string, appId: string, version: string, buildNumber: number) {
   const filename = `MyApp-${version}.zip`;
-  const uploadRes = await SELF.fetch(`https://railcast.test/${appId}/upload/${filename}`, {
-    method: "PUT",
-    headers: { Authorization: `Bearer ${token}` },
-    body: `bytes for ${version}`,
-  });
-  const upload = await uploadRes.json<{ file_key: string; file_size: number }>();
+  const { file_key, file_size, sha256 } = await uploadBuild(
+    token,
+    appId,
+    filename,
+    `bytes for ${version}`
+  );
 
   return SELF.fetch(`https://railcast.test/${appId}/versions`, {
     method: "POST",
@@ -39,9 +56,9 @@ async function publishVersion(token: string, appId: string, version: string, bui
     body: JSON.stringify({
       version,
       build_number: buildNumber,
-      file_key: upload.file_key,
-      file_size: upload.file_size,
-      sha256: "deadbeef",
+      file_key,
+      file_size,
+      sha256,
       signature: `sig-${version}`,
     }),
   });
@@ -95,7 +112,7 @@ describe("upload", () => {
     // attacker's token is real and valid — just not for owner's app
     const res = await SELF.fetch(`https://railcast.test/${owner.appId}/upload/build.zip`, {
       method: "PUT",
-      headers: { Authorization: `Bearer ${attacker.token}` },
+      headers: { Authorization: `Bearer ${attacker.token}`, "X-Sha256": await sha256Hex("bytes") },
       body: "bytes",
     });
     expect(res.status).toBe(403);
@@ -105,10 +122,59 @@ describe("upload", () => {
     const { token } = await seedUserAppAndToken();
     const res = await SELF.fetch(`https://railcast.test/this-app-id-was-never-created/upload/build.zip`, {
       method: "PUT",
-      headers: { Authorization: `Bearer ${token}` },
+      headers: { Authorization: `Bearer ${token}`, "X-Sha256": await sha256Hex("bytes") },
       body: "bytes",
     });
     expect(res.status).toBe(404);
+  });
+
+  it("rejects an upload with no X-Sha256 header", async () => {
+    const { token, appId } = await seedUserAppAndToken();
+    const res = await SELF.fetch(`https://railcast.test/${appId}/upload/build.zip`, {
+      method: "PUT",
+      headers: { Authorization: `Bearer ${token}` },
+      body: "bytes",
+    });
+    expect(res.status).toBe(400);
+  });
+
+  it("rejects an upload with a malformed X-Sha256 header", async () => {
+    const { token, appId } = await seedUserAppAndToken();
+    const res = await SELF.fetch(`https://railcast.test/${appId}/upload/build.zip`, {
+      method: "PUT",
+      headers: { Authorization: `Bearer ${token}`, "X-Sha256": "not-a-real-hash" },
+      body: "bytes",
+    });
+    expect(res.status).toBe(400);
+  });
+
+  it("rejects an upload whose bytes don't match the claimed X-Sha256 — R2 verifies, we don't just trust it", async () => {
+    const { token, appId } = await seedUserAppAndToken();
+    const wrongHash = await sha256Hex("some completely different content");
+    const res = await SELF.fetch(`https://railcast.test/${appId}/upload/build.zip`, {
+      method: "PUT",
+      headers: { Authorization: `Bearer ${token}`, "X-Sha256": wrongHash },
+      body: "actual bytes being uploaded",
+    });
+    expect(res.status).toBe(400);
+  });
+
+  it("409s re-uploading to a file_key that's already attached to a published version", async () => {
+    const { token, appId } = await seedUserAppAndToken();
+    const publishRes = await publishVersion(token, appId, "1.0.0", 1);
+    expect(publishRes.status).toBe(201);
+
+    // Same filename as publishVersion's internal MyApp-1.0.0.zip — trying
+    // to swap the bytes under an already-published version's file_key.
+    const res = await SELF.fetch(`https://railcast.test/${appId}/upload/MyApp-1.0.0.zip`, {
+      method: "PUT",
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "X-Sha256": await sha256Hex("different bytes entirely"),
+      },
+      body: "different bytes entirely",
+    });
+    expect(res.status).toBe(409);
   });
 });
 
@@ -116,15 +182,15 @@ describe("publish flow", () => {
   it("uploads a build, registers a version, then serves it in appcast.xml", async () => {
     const { token, appId } = await seedUserAppAndToken();
 
-    const uploadRes = await SELF.fetch(`https://railcast.test/${appId}/upload/MyApp-1.0.0.zip`, {
-      method: "PUT",
-      headers: { Authorization: `Bearer ${token}` },
-      body: "fake build bytes",
-    });
+    const {
+      res: uploadRes,
+      file_key,
+      file_size,
+      sha256,
+    } = await uploadBuild(token, appId, "MyApp-1.0.0.zip", "fake build bytes");
     expect(uploadRes.status).toBe(200);
-    const upload = await uploadRes.json<{ file_key: string; file_size: number }>();
-    expect(upload.file_key).toBe(`${appId}/MyApp-1.0.0.zip`);
-    expect(upload.file_size).toBeGreaterThan(0);
+    expect(file_key).toBe(`${appId}/MyApp-1.0.0.zip`);
+    expect(file_size).toBeGreaterThan(0);
 
     const versionRes = await SELF.fetch(`https://railcast.test/${appId}/versions`, {
       method: "POST",
@@ -132,9 +198,9 @@ describe("publish flow", () => {
       body: JSON.stringify({
         version: "1.0.0",
         build_number: 1,
-        file_key: upload.file_key,
-        file_size: upload.file_size,
-        sha256: "deadbeef",
+        file_key,
+        file_size,
+        sha256,
         signature: "fake-signature-b64",
         release_notes: "First release",
       }),
@@ -148,25 +214,77 @@ describe("publish flow", () => {
     expect(xml).toContain('sparkle:edSignature="fake-signature-b64"');
   });
 
+  it("rejects registering a version whose claimed sha256 doesn't match the verified upload", async () => {
+    const { token, appId } = await seedUserAppAndToken();
+    const { file_key, file_size } = await uploadBuild(
+      token,
+      appId,
+      "MyApp-1.0.1.zip",
+      "fake build bytes"
+    );
+
+    const res = await SELF.fetch(`https://railcast.test/${appId}/versions`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+      body: JSON.stringify({
+        version: "1.0.1",
+        build_number: 1,
+        file_key,
+        file_size,
+        // A syntactically valid but wrong hash — this is the actual
+        // "swap the file" attack: upload is legitimate and verified, but
+        // the version record claims a different (e.g. previously signed)
+        // sha256 than what's really sitting at file_key.
+        sha256: await sha256Hex("something else entirely"),
+        signature: "fake-signature-b64",
+      }),
+    });
+    expect(res.status).toBe(400);
+  });
+
+  it("rejects registering a version with a malformed (non-64-hex) sha256", async () => {
+    const { token, appId } = await seedUserAppAndToken();
+    const { file_key, file_size } = await uploadBuild(
+      token,
+      appId,
+      "MyApp-1.0.2.zip",
+      "fake build bytes"
+    );
+
+    const res = await SELF.fetch(`https://railcast.test/${appId}/versions`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+      body: JSON.stringify({
+        version: "1.0.2",
+        build_number: 1,
+        file_key,
+        file_size,
+        sha256: "deadbeef",
+        signature: "fake-signature-b64",
+      }),
+    });
+    expect(res.status).toBe(400);
+  });
+
   it("marks a version critical and omits the tag when not set", async () => {
     const { token, appId } = await seedUserAppAndToken();
 
     async function publish(build: number, critical: boolean) {
-      const uploadRes = await SELF.fetch(`https://railcast.test/${appId}/upload/v${build}.zip`, {
-        method: "PUT",
-        headers: { Authorization: `Bearer ${token}` },
-        body: "fake build bytes",
-      });
-      const upload = await uploadRes.json<{ file_key: string; file_size: number }>();
+      const { file_key, file_size, sha256 } = await uploadBuild(
+        token,
+        appId,
+        `v${build}.zip`,
+        "fake build bytes"
+      );
       return SELF.fetch(`https://railcast.test/${appId}/versions`, {
         method: "POST",
         headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
         body: JSON.stringify({
           version: `1.0.${build}`,
           build_number: build,
-          file_key: upload.file_key,
-          file_size: upload.file_size,
-          sha256: "deadbeef",
+          file_key,
+          file_size,
+          sha256,
           signature: "fake-signature-b64",
           critical,
         }),
@@ -185,12 +303,12 @@ describe("publish flow", () => {
   it("echoes phased_rollout_interval into the appcast and validates it server-side", async () => {
     const { token, appId } = await seedUserAppAndToken();
 
-    const uploadRes = await SELF.fetch(`https://railcast.test/${appId}/upload/rollout.zip`, {
-      method: "PUT",
-      headers: { Authorization: `Bearer ${token}` },
-      body: "fake build bytes",
-    });
-    const upload = await uploadRes.json<{ file_key: string; file_size: number }>();
+    const { file_key, file_size, sha256 } = await uploadBuild(
+      token,
+      appId,
+      "rollout.zip",
+      "fake build bytes"
+    );
 
     const bad = await SELF.fetch(`https://railcast.test/${appId}/versions`, {
       method: "POST",
@@ -198,9 +316,9 @@ describe("publish flow", () => {
       body: JSON.stringify({
         version: "1.1.0",
         build_number: 1,
-        file_key: upload.file_key,
-        file_size: upload.file_size,
-        sha256: "deadbeef",
+        file_key,
+        file_size,
+        sha256,
         signature: "fake-signature-b64",
         phased_rollout_interval: -1,
       }),
@@ -213,9 +331,9 @@ describe("publish flow", () => {
       body: JSON.stringify({
         version: "1.1.0",
         build_number: 1,
-        file_key: upload.file_key,
-        file_size: upload.file_size,
-        sha256: "deadbeef",
+        file_key,
+        file_size,
+        sha256,
         signature: "fake-signature-b64",
         phased_rollout_interval: 86400,
       }),
@@ -237,7 +355,7 @@ describe("publish flow", () => {
         build_number: 1,
         file_key: `${appId}/never-uploaded.zip`,
         file_size: 100,
-        sha256: "deadbeef",
+        sha256: "a".repeat(64),
         signature: "sig",
       }),
     });
@@ -259,7 +377,9 @@ describe("publish flow", () => {
     // Newest (highest build_number) must be the first <item> — that's what
     // an RSS/Sparkle consumer treats as "latest".
     const firstItemIndex = xml.indexOf("<item>");
-    const versionIndex = xml.indexOf("<sparkle:shortVersionString>2.2.2</sparkle:shortVersionString>");
+    const versionIndex = xml.indexOf(
+      "<sparkle:shortVersionString>2.2.2</sparkle:shortVersionString>"
+    );
     expect(versionIndex).toBeGreaterThan(firstItemIndex);
     expect(xml.indexOf("2.2.2")).toBeLessThan(xml.indexOf("1.1.1"));
   });
@@ -294,12 +414,12 @@ describe("publish flow", () => {
 
     // A beta build_number lower than stable's is fine — channels track
     // build_number independently.
-    const betaUpload = await SELF.fetch(`https://railcast.test/${appId}/upload/beta.zip`, {
-      method: "PUT",
-      headers: { Authorization: `Bearer ${token}` },
-      body: "beta bytes",
-    });
-    const beta = await betaUpload.json<{ file_key: string; file_size: number }>();
+    const { file_key, file_size, sha256 } = await uploadBuild(
+      token,
+      appId,
+      "beta.zip",
+      "beta bytes"
+    );
     const betaVersion = await SELF.fetch(`https://railcast.test/${appId}/versions`, {
       method: "POST",
       headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
@@ -307,9 +427,9 @@ describe("publish flow", () => {
         version: "1.1.0-beta",
         build_number: 1,
         channel: "beta",
-        file_key: beta.file_key,
-        file_size: beta.file_size,
-        sha256: "deadbeef",
+        file_key,
+        file_size,
+        sha256,
         signature: "sig-beta",
       }),
     });

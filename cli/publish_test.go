@@ -4,8 +4,11 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/base64"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -106,5 +109,39 @@ func TestLoadPrivateKey_FindsKeyAmongTrailingHintText(t *testing.T) {
 func TestLoadPrivateKey_MissingFile(t *testing.T) {
 	if _, err := loadPrivateKey("/nonexistent/path/to/key"); err == nil {
 		t.Fatal("expected an error for a missing file, got nil")
+	}
+}
+
+func TestDoUpload_SendsXSha256Header(t *testing.T) {
+	var gotHeader string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotHeader = r.Header.Get("X-Sha256")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"file_key":"app1/build.zip","file_size":4}`))
+	}))
+	defer srv.Close()
+
+	_, err := doUpload(srv.URL, "test-token", "app1", "build.zip", "deadbeef", []byte("data"))
+	if err != nil {
+		t.Fatalf("doUpload returned an error: %v", err)
+	}
+	if gotHeader != "deadbeef" {
+		t.Fatalf("expected X-Sha256 header %q, got %q", "deadbeef", gotHeader)
+	}
+}
+
+func TestDoUpload_ConflictOnAlreadyPublishedFileKey(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusConflict)
+		w.Write([]byte("this file_key is already attached to a published version"))
+	}))
+	defer srv.Close()
+
+	_, err := doUpload(srv.URL, "test-token", "app1", "build.zip", "deadbeef", []byte("data"))
+	if err == nil {
+		t.Fatal("expected an error for a 409 response, got nil")
+	}
+	if !strings.Contains(err.Error(), "already published") {
+		t.Fatalf("expected the server's already-published message to surface, got: %v", err)
 	}
 }
