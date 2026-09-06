@@ -5,7 +5,7 @@ import { env } from "cloudflare:test";
 // sandbox, which has no filesystem access — if you change the schema,
 // mirror it here too.
 const DDL = [
-  `CREATE TABLE users (id TEXT PRIMARY KEY, email TEXT UNIQUE NOT NULL, created_at INTEGER NOT NULL);`,
+  `CREATE TABLE users (id TEXT PRIMARY KEY, email TEXT UNIQUE NOT NULL, password_hash TEXT, created_at INTEGER NOT NULL);`,
   `CREATE TABLE sessions (id TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id), expires_at INTEGER NOT NULL, created_at INTEGER NOT NULL);`,
   `CREATE TABLE magic_links (token TEXT PRIMARY KEY, email TEXT NOT NULL, expires_at INTEGER NOT NULL, used INTEGER NOT NULL DEFAULT 0);`,
   `CREATE TABLE api_tokens (token TEXT PRIMARY KEY, id TEXT, preview TEXT NOT NULL DEFAULT '', user_id TEXT NOT NULL REFERENCES users(id), created_at INTEGER NOT NULL);`,
