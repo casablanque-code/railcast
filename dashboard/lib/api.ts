@@ -63,6 +63,16 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ email }),
     }),
+  login: (email: string, password: string) =>
+    request<{ ok: true }>("/auth/login", {
+      method: "POST",
+      body: JSON.stringify({ email, password }),
+    }),
+  register: (email: string, password: string) =>
+    request<{ ok: true }>("/auth/register", {
+      method: "POST",
+      body: JSON.stringify({ email, password }),
+    }),
   listApps: () => request<{ apps: App[] }>("/api/apps"),
   createApp: (name: string, signingPublicKey: string) =>
     request<App>("/api/apps", {

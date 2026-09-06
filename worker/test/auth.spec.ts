@@ -22,6 +22,131 @@ describe("POST /auth/request", () => {
   });
 });
 
+describe("POST /auth/register", () => {
+  it("rejects a short password", async () => {
+    const res = await SELF.fetch("https://railcast.test/auth/register", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email: `${crypto.randomUUID()}@example.com`, password: "short" }),
+    });
+    expect(res.status).toBe(400);
+  });
+
+  it("creates a user and returns a session cookie", async () => {
+    const email = `${crypto.randomUUID()}@example.com`;
+    const res = await SELF.fetch("https://railcast.test/auth/register", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email, password: "correct-horse-battery" }),
+    });
+    expect(res.status).toBe(200);
+    expect(res.headers.get("Set-Cookie")).toContain("session=");
+
+    const row = await env.DB.prepare(`SELECT password_hash FROM users WHERE email = ?`)
+      .bind(email)
+      .first<{ password_hash: string }>();
+    expect(row?.password_hash).toBeTruthy();
+  });
+
+  it("rejects registering an email that already has a password", async () => {
+    const email = `${crypto.randomUUID()}@example.com`;
+    const first = await SELF.fetch("https://railcast.test/auth/register", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email, password: "correct-horse-battery" }),
+    });
+    expect(first.status).toBe(200);
+
+    const second = await SELF.fetch("https://railcast.test/auth/register", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email, password: "another-password" }),
+    });
+    expect(second.status).toBe(409);
+  });
+
+  it("lets a magic-link-only account attach a password", async () => {
+    const userId = crypto.randomUUID();
+    const email = `${crypto.randomUUID()}@example.com`;
+    const now = Math.floor(Date.now() / 1000);
+    await env.DB.prepare(`INSERT INTO users (id, email, created_at) VALUES (?, ?, ?)`)
+      .bind(userId, email, now)
+      .run();
+
+    const res = await SELF.fetch("https://railcast.test/auth/register", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email, password: "correct-horse-battery" }),
+    });
+    expect(res.status).toBe(200);
+
+    const row = await env.DB.prepare(`SELECT id, password_hash FROM users WHERE email = ?`)
+      .bind(email)
+      .first<{ id: string; password_hash: string }>();
+    expect(row?.id).toBe(userId);
+    expect(row?.password_hash).toBeTruthy();
+  });
+});
+
+describe("POST /auth/login", () => {
+  it("401s on a wrong password", async () => {
+    const email = `${crypto.randomUUID()}@example.com`;
+    await SELF.fetch("https://railcast.test/auth/register", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email, password: "correct-horse-battery" }),
+    });
+
+    const res = await SELF.fetch("https://railcast.test/auth/login", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email, password: "wrong-password" }),
+    });
+    expect(res.status).toBe(401);
+  });
+
+  it("401s for an email with no password set (magic-link-only account)", async () => {
+    const userId = crypto.randomUUID();
+    const email = `${crypto.randomUUID()}@example.com`;
+    await env.DB.prepare(`INSERT INTO users (id, email, created_at) VALUES (?, ?, ?)`)
+      .bind(userId, email, Math.floor(Date.now() / 1000))
+      .run();
+
+    const res = await SELF.fetch("https://railcast.test/auth/login", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email, password: "whatever" }),
+    });
+    expect(res.status).toBe(401);
+  });
+
+  it("logs in with the correct password and returns a working session", async () => {
+    const email = `${crypto.randomUUID()}@example.com`;
+    await SELF.fetch("https://railcast.test/auth/register", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email, password: "correct-horse-battery" }),
+    });
+
+    const login = await SELF.fetch("https://railcast.test/auth/login", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email, password: "correct-horse-battery" }),
+    });
+    expect(login.status).toBe(200);
+    const setCookie = login.headers.get("Set-Cookie") ?? "";
+    const sessionId = setCookie.match(/session=([^;]+)/)?.[1];
+    expect(sessionId).toBeTruthy();
+
+    const me = await SELF.fetch("https://railcast.test/api/me", {
+      headers: { Cookie: `session=${sessionId}` },
+    });
+    expect(me.status).toBe(200);
+    const body = await me.json<{ email: string }>();
+    expect(body.email).toBe(email);
+  });
+});
+
 describe("GET /api/me", () => {
   it("401s with no session cookie", async () => {
     const res = await SELF.fetch("https://railcast.test/api/me");

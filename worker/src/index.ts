@@ -107,6 +107,63 @@ function bufferToHex(buffer: ArrayBuffer): string {
 
 const SHA256_HEX_RE = /^[0-9a-f]{64}$/i;
 
+// ---------- Password hashing ----------
+// PBKDF2 via Web Crypto — available natively on Workers, no extra
+// dependency (bcrypt/argon2 packages generally need Node APIs we don't
+// have here). 100k iterations is a reasonable floor for PBKDF2-SHA256.
+
+const PBKDF2_ITERATIONS = 100_000;
+const MIN_PASSWORD_LENGTH = 8;
+
+function hexToBytes(hex: string): Uint8Array {
+  const bytes = new Uint8Array(hex.length / 2);
+  for (let i = 0; i < bytes.length; i++) {
+    bytes[i] = parseInt(hex.substr(i * 2, 2), 16);
+  }
+  return bytes;
+}
+
+// Constant-time-ish comparison so a failed login can't be timed
+// character-by-character against a real hash.
+function timingSafeEqualHex(a: string, b: string): boolean {
+  if (a.length !== b.length) return false;
+  let diff = 0;
+  for (let i = 0; i < a.length; i++) {
+    diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  }
+  return diff === 0;
+}
+
+async function derivePbkdf2Hex(password: string, salt: Uint8Array): Promise<string> {
+  const key = await crypto.subtle.importKey("raw", new TextEncoder().encode(password), "PBKDF2", false, [
+    "deriveBits",
+  ]);
+  const bits = await crypto.subtle.deriveBits(
+    { name: "PBKDF2", salt: salt as BufferSource, iterations: PBKDF2_ITERATIONS, hash: "SHA-256" },
+    key,
+    256
+  );
+  return bufferToHex(bits);
+}
+
+// Stored as "salt:hash", both hex — self-contained, no separate salt column.
+async function hashPassword(password: string): Promise<string> {
+  const salt = crypto.getRandomValues(new Uint8Array(16));
+  const hash = await derivePbkdf2Hex(password, salt);
+  return `${bufferToHex(salt.buffer)}:${hash}`;
+}
+
+// Fixed-shape dummy so verifying against a non-existent user still does a
+// full PBKDF2 pass — login timing shouldn't reveal whether the email exists.
+const DUMMY_PASSWORD_HASH = `${"00".repeat(16)}:${"00".repeat(32)}`;
+
+async function verifyPassword(password: string, stored: string): Promise<boolean> {
+  const [saltHex, hashHex] = stored.split(":");
+  if (!saltHex || !hashHex) return false;
+  const computed = await derivePbkdf2Hex(password, hexToBytes(saltHex));
+  return timingSafeEqualHex(computed, hashHex);
+}
+
 // ---------- Rate limiting (D1-backed, coarse but enough to stop spam) ----------
 
 async function rateLimited(
@@ -250,6 +307,27 @@ async function sendMagicLinkEmail(env: Env, email: string, link: string): Promis
   }
 }
 
+function sessionCookie(sessionId: string): string {
+  return `session=${sessionId}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=${
+    30 * 24 * 60 * 60
+  }`;
+}
+
+async function issueSession(env: Env, userId: string): Promise<string> {
+  const sessionId = randomToken();
+  const sessionHash = await sha256Hex(sessionId);
+  const now = Math.floor(Date.now() / 1000);
+  const expiresAt = now + 30 * 24 * 60 * 60;
+
+  await env.DB.prepare(
+    `INSERT INTO sessions (id, user_id, expires_at, created_at) VALUES (?, ?, ?, ?)`
+  )
+    .bind(sessionHash, userId, expiresAt, now)
+    .run();
+
+  return sessionId;
+}
+
 async function handleAuthRequest(request: Request, env: Env): Promise<Response> {
   let body: { email?: string };
   try {
@@ -330,24 +408,120 @@ async function handleAuthVerify(request: Request, env: Env): Promise<Response> {
     user = { id: userId };
   }
 
-  const sessionId = randomToken();
-  const sessionHash = await sha256Hex(sessionId);
-  const sessionExpiresAt = now + 30 * 24 * 60 * 60;
-
-  await env.DB.prepare(
-    `INSERT INTO sessions (id, user_id, expires_at, created_at) VALUES (?, ?, ?, ?)`
-  )
-    .bind(sessionHash, user.id, sessionExpiresAt, now)
-    .run();
+  const sessionId = await issueSession(env, user.id);
 
   return new Response(null, {
     status: 302,
     headers: {
       Location: "/dashboard",
-      "Set-Cookie": `session=${sessionId}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=${
-        30 * 24 * 60 * 60
-      }`,
+      "Set-Cookie": sessionCookie(sessionId),
     },
+  });
+}
+
+// Email/password sign-up. Creates the user if the email is new, or attaches
+// a password to an existing magic-link-only account (so people who signed
+// up passwordlessly aren't locked out of switching later). Fails if the
+// account already has a password — use /auth/login instead.
+async function handleAuthRegister(request: Request, env: Env): Promise<Response> {
+  let body: { email?: string; password?: string };
+  try {
+    body = await request.json();
+  } catch {
+    return new Response("Invalid JSON", { status: 400 });
+  }
+
+  const email = body.email?.trim().toLowerCase();
+  const password = body.password ?? "";
+
+  if (!email || !email.includes("@")) {
+    return new Response("Valid email required", { status: 400 });
+  }
+  if (password.length < MIN_PASSWORD_LENGTH) {
+    return new Response(`Password must be at least ${MIN_PASSWORD_LENGTH} characters`, {
+      status: 400,
+    });
+  }
+
+  const ip = clientIp(request);
+  if (await rateLimited(env, `authregister:ip:${ip}`, 20, 3600)) {
+    return new Response("Too many attempts, try again later", { status: 429 });
+  }
+
+  const existing = await env.DB.prepare(`SELECT id, password_hash FROM users WHERE email = ?`)
+    .bind(email)
+    .first<{ id: string; password_hash: string | null }>();
+
+  if (existing?.password_hash) {
+    return new Response("An account with this email already exists", { status: 409 });
+  }
+
+  const passwordHash = await hashPassword(password);
+  const now = Math.floor(Date.now() / 1000);
+
+  let userId: string;
+  if (existing) {
+    userId = existing.id;
+    await env.DB.prepare(`UPDATE users SET password_hash = ? WHERE id = ?`)
+      .bind(passwordHash, userId)
+      .run();
+  } else {
+    userId = crypto.randomUUID();
+    await env.DB.prepare(
+      `INSERT INTO users (id, email, password_hash, created_at) VALUES (?, ?, ?, ?)`
+    )
+      .bind(userId, email, passwordHash, now)
+      .run();
+  }
+
+  const sessionId = await issueSession(env, userId);
+
+  return new Response(JSON.stringify({ ok: true }), {
+    status: 200,
+    headers: { "Content-Type": "application/json", "Set-Cookie": sessionCookie(sessionId) },
+  });
+}
+
+async function handleAuthLogin(request: Request, env: Env): Promise<Response> {
+  let body: { email?: string; password?: string };
+  try {
+    body = await request.json();
+  } catch {
+    return new Response("Invalid JSON", { status: 400 });
+  }
+
+  const email = body.email?.trim().toLowerCase();
+  const password = body.password ?? "";
+  if (!email || !password) {
+    return new Response("Email and password required", { status: 400 });
+  }
+
+  const ip = clientIp(request);
+  if (
+    (await rateLimited(env, `authlogin:ip:${ip}`, 20, 3600)) ||
+    (await rateLimited(env, `authlogin:email:${email}`, 10, 3600))
+  ) {
+    return new Response("Too many attempts, try again later", { status: 429 });
+  }
+
+  const user = await env.DB.prepare(`SELECT id, password_hash FROM users WHERE email = ?`)
+    .bind(email)
+    .first<{ id: string; password_hash: string | null }>();
+
+  // Always run the PBKDF2 comparison, even for an unknown email or a
+  // magic-link-only account with no password set, so response timing
+  // doesn't leak which case we hit.
+  const valid = await verifyPassword(password, user?.password_hash ?? DUMMY_PASSWORD_HASH);
+
+  if (!user || !user.password_hash || !valid) {
+    return new Response("Invalid email or password", { status: 401 });
+  }
+
+  const sessionId = await issueSession(env, user.id);
+
+  return new Response(JSON.stringify({ ok: true }), {
+    status: 200,
+    headers: { "Content-Type": "application/json", "Set-Cookie": sessionCookie(sessionId) },
   });
 }
 
@@ -820,6 +994,12 @@ export default {
     }
     if (url.pathname === "/auth/verify" && request.method === "GET") {
       return handleAuthVerify(request, env);
+    }
+    if (url.pathname === "/auth/register" && request.method === "POST") {
+      return handleAuthRegister(request, env);
+    }
+    if (url.pathname === "/auth/login" && request.method === "POST") {
+      return handleAuthLogin(request, env);
     }
 
     if (url.pathname.startsWith("/api/")) {

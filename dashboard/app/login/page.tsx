@@ -3,14 +3,36 @@
 import { FormEvent, useState } from "react";
 import { api, ApiError } from "@/lib/api";
 
+type Mode = "password" | "link";
 type Status = "idle" | "sending" | "sent" | "error";
 
 export default function LoginPage() {
+  const [mode, setMode] = useState<Mode>("password");
   const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
   const [status, setStatus] = useState<Status>("idle");
   const [error, setError] = useState<string | null>(null);
 
-  async function onSubmit(e: FormEvent) {
+  function switchMode(next: Mode) {
+    setMode(next);
+    setStatus("idle");
+    setError(null);
+  }
+
+  async function onSubmitPassword(e: FormEvent) {
+    e.preventDefault();
+    setStatus("sending");
+    setError(null);
+    try {
+      await api.login(email, password);
+      window.location.href = "/dashboard";
+    } catch (err) {
+      setStatus("error");
+      setError(err instanceof ApiError ? err.message : "Something went wrong");
+    }
+  }
+
+  async function onSubmitLink(e: FormEvent) {
     e.preventDefault();
     setStatus("sending");
     setError(null);
@@ -34,7 +56,24 @@ export default function LoginPage() {
       </div>
 
       <div className="card max-w-sm">
-        {status === "sent" ? (
+        <div className="mb-4 flex gap-4 text-sm">
+          <button
+            type="button"
+            onClick={() => switchMode("password")}
+            className={mode === "password" ? "font-medium text-ink" : "text-ink/50 hover:text-ink"}
+          >
+            Password
+          </button>
+          <button
+            type="button"
+            onClick={() => switchMode("link")}
+            className={mode === "link" ? "font-medium text-ink" : "text-ink/50 hover:text-ink"}
+          >
+            Email link
+          </button>
+        </div>
+
+        {mode === "link" && status === "sent" ? (
           <div className="text-sm">
             <p className="font-medium text-ink">Check your email</p>
             <p className="mt-1 text-ink/60">
@@ -43,7 +82,7 @@ export default function LoginPage() {
             </p>
           </div>
         ) : (
-          <form onSubmit={onSubmit} className="space-y-4">
+          <form onSubmit={mode === "password" ? onSubmitPassword : onSubmitLink} className="space-y-4">
             <div>
               <label className="label" htmlFor="email">
                 Email
@@ -58,8 +97,30 @@ export default function LoginPage() {
                 onChange={(e) => setEmail(e.target.value)}
               />
             </div>
+            {mode === "password" && (
+              <div>
+                <label className="label" htmlFor="password">
+                  Password
+                </label>
+                <input
+                  id="password"
+                  type="password"
+                  required
+                  placeholder="••••••••"
+                  className="input"
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                />
+              </div>
+            )}
             <button type="submit" className="btn w-full" disabled={status === "sending"}>
-              {status === "sending" ? "Sending…" : "Send login link"}
+              {status === "sending"
+                ? mode === "password"
+                  ? "Logging in…"
+                  : "Sending…"
+                : mode === "password"
+                  ? "Log in"
+                  : "Send login link"}
             </button>
             {status === "error" && <p className="text-sm text-red-600">{error}</p>}
           </form>
@@ -67,9 +128,9 @@ export default function LoginPage() {
       </div>
 
       <p className="mt-6 text-xs text-ink/40">
-        Already have a link in your inbox?{" "}
-        <a className="text-accent hover:underline" href="/dashboard">
-          Go to the dashboard
+        No account yet?{" "}
+        <a className="text-accent hover:underline" href="/register">
+          Create one
         </a>
       </p>
     </main>
