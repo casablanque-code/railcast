@@ -32,7 +32,7 @@ describe("POST /auth/register", () => {
     expect(res.status).toBe(400);
   });
 
-  it("creates a user and returns a session cookie", async () => {
+  it("creates an unverified user, sends no session cookie yet, and stores a verification token", async () => {
     const email = `${crypto.randomUUID()}@example.com`;
     const res = await SELF.fetch("https://railcast.test/auth/register", {
       method: "POST",
@@ -40,12 +40,26 @@ describe("POST /auth/register", () => {
       body: JSON.stringify({ email, password: "correct-horse-battery" }),
     });
     expect(res.status).toBe(200);
-    expect(res.headers.get("Set-Cookie")).toContain("session=");
+    expect(res.headers.get("Set-Cookie")).toBeNull();
+    const body = await res.json<{ ok: true; verification_required: boolean }>();
+    expect(body.verification_required).toBe(true);
 
-    const row = await env.DB.prepare(`SELECT password_hash FROM users WHERE email = ?`)
+    const user = await env.DB.prepare(
+      `SELECT password_hash, email_verified FROM users WHERE email = ?`
+    )
       .bind(email)
-      .first<{ password_hash: string }>();
-    expect(row?.password_hash).toBeTruthy();
+      .first<{ password_hash: string; email_verified: number }>();
+    expect(user?.password_hash).toBeTruthy();
+    expect(user?.email_verified).toBe(0);
+
+    const verification = await env.DB.prepare(
+      `SELECT count(*) as c FROM email_verifications ev
+       JOIN users u ON u.id = ev.user_id
+       WHERE u.email = ? AND ev.used = 0`
+    )
+      .bind(email)
+      .first<{ c: number }>();
+    expect(verification?.c).toBe(1);
   });
 
   it("rejects registering an email that already has a password", async () => {
@@ -65,11 +79,15 @@ describe("POST /auth/register", () => {
     expect(second.status).toBe(409);
   });
 
-  it("lets a magic-link-only account attach a password", async () => {
+  it("lets a magic-link-only account attach a password and log in immediately", async () => {
+    // A row created via the magic-link flow is already verified (see
+    // /auth/verify), so attaching a password shouldn't need re-confirmation.
     const userId = crypto.randomUUID();
     const email = `${crypto.randomUUID()}@example.com`;
     const now = Math.floor(Date.now() / 1000);
-    await env.DB.prepare(`INSERT INTO users (id, email, created_at) VALUES (?, ?, ?)`)
+    await env.DB.prepare(
+      `INSERT INTO users (id, email, email_verified, created_at) VALUES (?, ?, 1, ?)`
+    )
       .bind(userId, email, now)
       .run();
 
@@ -79,6 +97,9 @@ describe("POST /auth/register", () => {
       body: JSON.stringify({ email, password: "correct-horse-battery" }),
     });
     expect(res.status).toBe(200);
+    expect(res.headers.get("Set-Cookie")).toContain("session=");
+    const body = await res.json<{ verification_required: boolean }>();
+    expect(body.verification_required).toBe(false);
 
     const row = await env.DB.prepare(`SELECT id, password_hash FROM users WHERE email = ?`)
       .bind(email)
@@ -88,14 +109,74 @@ describe("POST /auth/register", () => {
   });
 });
 
-describe("POST /auth/login", () => {
-  it("401s on a wrong password", async () => {
+describe("GET /auth/verify-email", () => {
+  it("400s on a missing token", async () => {
+    const res = await SELF.fetch("https://railcast.test/auth/verify-email");
+    expect(res.status).toBe(400);
+  });
+
+  it("400s on an unknown token", async () => {
+    const res = await SELF.fetch(
+      "https://railcast.test/auth/verify-email?token=does-not-exist"
+    );
+    expect(res.status).toBe(400);
+  });
+
+  it("verifies the user, logs them in, and burns the token on reuse", async () => {
+    const userId = crypto.randomUUID();
     const email = `${crypto.randomUUID()}@example.com`;
+    const now = Math.floor(Date.now() / 1000);
+    const rawToken = "verify-" + crypto.randomUUID();
+
+    await env.DB.prepare(
+      `INSERT INTO users (id, email, password_hash, email_verified, created_at) VALUES (?, ?, ?, 0, ?)`
+    )
+      .bind(userId, email, "irrelevant-hash", now)
+      .run();
+    await env.DB.prepare(
+      `INSERT INTO email_verifications (token, user_id, expires_at, used) VALUES (?, ?, ?, 0)`
+    )
+      .bind(await sha256Hex(rawToken), userId, now + 3600)
+      .run();
+
+    const res = await SELF.fetch(
+      `https://railcast.test/auth/verify-email?token=${rawToken}`,
+      { redirect: "manual" }
+    );
+    expect(res.status).toBe(302);
+    expect(res.headers.get("Location")).toBe("/dashboard");
+    expect(res.headers.get("Set-Cookie")).toContain("session=");
+
+    const user = await env.DB.prepare(`SELECT email_verified FROM users WHERE id = ?`)
+      .bind(userId)
+      .first<{ email_verified: number }>();
+    expect(user?.email_verified).toBe(1);
+
+    const reuse = await SELF.fetch(
+      `https://railcast.test/auth/verify-email?token=${rawToken}`,
+      { redirect: "manual" }
+    );
+    expect(reuse.status).toBe(400);
+  });
+});
+
+describe("POST /auth/login", () => {
+  async function registerAndVerify(email: string, password: string): Promise<void> {
     await SELF.fetch("https://railcast.test/auth/register", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ email, password: "correct-horse-battery" }),
+      body: JSON.stringify({ email, password }),
     });
+    // Registration leaves the account unverified — flip it directly, same
+    // effect as the person clicking the confirmation link.
+    await env.DB.prepare(`UPDATE users SET email_verified = 1 WHERE email = ?`)
+      .bind(email)
+      .run();
+  }
+
+  it("401s on a wrong password", async () => {
+    const email = `${crypto.randomUUID()}@example.com`;
+    await registerAndVerify(email, "correct-horse-battery");
 
     const res = await SELF.fetch("https://railcast.test/auth/login", {
       method: "POST",
@@ -108,7 +189,9 @@ describe("POST /auth/login", () => {
   it("401s for an email with no password set (magic-link-only account)", async () => {
     const userId = crypto.randomUUID();
     const email = `${crypto.randomUUID()}@example.com`;
-    await env.DB.prepare(`INSERT INTO users (id, email, created_at) VALUES (?, ?, ?)`)
+    await env.DB.prepare(
+      `INSERT INTO users (id, email, email_verified, created_at) VALUES (?, ?, 1, ?)`
+    )
       .bind(userId, email, Math.floor(Date.now() / 1000))
       .run();
 
@@ -120,13 +203,25 @@ describe("POST /auth/login", () => {
     expect(res.status).toBe(401);
   });
 
-  it("logs in with the correct password and returns a working session", async () => {
+  it("403s with the correct password if the email hasn't been confirmed yet", async () => {
     const email = `${crypto.randomUUID()}@example.com`;
     await SELF.fetch("https://railcast.test/auth/register", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ email, password: "correct-horse-battery" }),
     });
+
+    const res = await SELF.fetch("https://railcast.test/auth/login", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email, password: "correct-horse-battery" }),
+    });
+    expect(res.status).toBe(403);
+  });
+
+  it("logs in with the correct password once verified, and returns a working session", async () => {
+    const email = `${crypto.randomUUID()}@example.com`;
+    await registerAndVerify(email, "correct-horse-battery");
 
     const login = await SELF.fetch("https://railcast.test/auth/login", {
       method: "POST",

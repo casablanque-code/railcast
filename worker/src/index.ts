@@ -287,7 +287,12 @@ async function getUserIdFromBearerToken(request: Request, env: Env): Promise<str
   return row?.user_id ?? null;
 }
 
-async function sendMagicLinkEmail(env: Env, email: string, link: string): Promise<void> {
+async function sendTransactionalEmail(
+  env: Env,
+  email: string,
+  subject: string,
+  html: string
+): Promise<void> {
   const resp = await fetch("https://api.resend.com/emails", {
     method: "POST",
     headers: {
@@ -297,14 +302,32 @@ async function sendMagicLinkEmail(env: Env, email: string, link: string): Promis
     body: JSON.stringify({
       from: "Railcast <onboarding@resend.dev>",
       to: [email],
-      subject: "Log in to Railcast",
-      html: `<p>Click to log in:</p><p><a href="${link}">${link}</a></p><p>This link expires in 15 minutes.</p>`,
+      subject,
+      html,
     }),
   });
   if (!resp.ok) {
     const text = await resp.text();
     throw new Error(`Resend API error (${resp.status}): ${text}`);
   }
+}
+
+async function sendMagicLinkEmail(env: Env, email: string, link: string): Promise<void> {
+  await sendTransactionalEmail(
+    env,
+    email,
+    "Log in to Railcast",
+    `<p>Click to log in:</p><p><a href="${link}">${link}</a></p><p>This link expires in 15 minutes.</p>`
+  );
+}
+
+async function sendVerificationEmail(env: Env, email: string, link: string): Promise<void> {
+  await sendTransactionalEmail(
+    env,
+    email,
+    "Confirm your Railcast account",
+    `<p>Click to confirm your email and finish signing up:</p><p><a href="${link}">${link}</a></p><p>This link expires in 60 minutes.</p>`
+  );
 }
 
 function sessionCookie(sessionId: string): string {
@@ -402,10 +425,19 @@ async function handleAuthVerify(request: Request, env: Env): Promise<Response> {
 
   if (!user) {
     const userId = crypto.randomUUID();
-    await env.DB.prepare(`INSERT INTO users (id, email, created_at) VALUES (?, ?, ?)`)
+    await env.DB.prepare(
+      `INSERT INTO users (id, email, email_verified, created_at) VALUES (?, ?, 1, ?)`
+    )
       .bind(userId, linkRow.email, now)
       .run();
     user = { id: userId };
+  } else {
+    // Clicking a magic link proves inbox ownership regardless of how the
+    // account originally got created — e.g. someone who registered with a
+    // password but never confirmed it can also verify this way.
+    await env.DB.prepare(`UPDATE users SET email_verified = 1 WHERE id = ?`)
+      .bind(user.id)
+      .run();
   }
 
   const sessionId = await issueSession(env, user.id);
@@ -423,6 +455,12 @@ async function handleAuthVerify(request: Request, env: Env): Promise<Response> {
 // a password to an existing magic-link-only account (so people who signed
 // up passwordlessly aren't locked out of switching later). Fails if the
 // account already has a password — use /auth/login instead.
+//
+// A brand-new email/password account starts unverified and gets no session
+// yet — we don't know this person actually controls that inbox until they
+// click the confirmation link. Attaching a password to an existing
+// magic-link account skips this: getting that far already proved inbox
+// ownership at least once.
 async function handleAuthRegister(request: Request, env: Env): Promise<Response> {
   let body: { email?: string; password?: string };
   try {
@@ -444,13 +482,18 @@ async function handleAuthRegister(request: Request, env: Env): Promise<Response>
   }
 
   const ip = clientIp(request);
-  if (await rateLimited(env, `authregister:ip:${ip}`, 20, 3600)) {
+  if (
+    (await rateLimited(env, `authregister:ip:${ip}`, 20, 3600)) ||
+    (await rateLimited(env, `authregister:email:${email}`, 5, 3600))
+  ) {
     return new Response("Too many attempts, try again later", { status: 429 });
   }
 
-  const existing = await env.DB.prepare(`SELECT id, password_hash FROM users WHERE email = ?`)
+  const existing = await env.DB.prepare(
+    `SELECT id, password_hash, email_verified FROM users WHERE email = ?`
+  )
     .bind(email)
-    .first<{ id: string; password_hash: string | null }>();
+    .first<{ id: string; password_hash: string | null; email_verified: number }>();
 
   if (existing?.password_hash) {
     return new Response("An account with this email already exists", { status: 409 });
@@ -458,27 +501,81 @@ async function handleAuthRegister(request: Request, env: Env): Promise<Response>
 
   const passwordHash = await hashPassword(password);
   const now = Math.floor(Date.now() / 1000);
+  const url = new URL(request.url);
 
-  let userId: string;
   if (existing) {
-    userId = existing.id;
+    // Magic-link account attaching a password — already verified, log in now.
     await env.DB.prepare(`UPDATE users SET password_hash = ? WHERE id = ?`)
-      .bind(passwordHash, userId)
+      .bind(passwordHash, existing.id)
       .run();
-  } else {
-    userId = crypto.randomUUID();
-    await env.DB.prepare(
-      `INSERT INTO users (id, email, password_hash, created_at) VALUES (?, ?, ?, ?)`
-    )
-      .bind(userId, email, passwordHash, now)
-      .run();
+
+    const sessionId = await issueSession(env, existing.id);
+    return new Response(JSON.stringify({ ok: true, verification_required: false }), {
+      status: 200,
+      headers: { "Content-Type": "application/json", "Set-Cookie": sessionCookie(sessionId) },
+    });
   }
 
-  const sessionId = await issueSession(env, userId);
+  const userId = crypto.randomUUID();
+  await env.DB.prepare(
+    `INSERT INTO users (id, email, password_hash, email_verified, created_at) VALUES (?, ?, ?, 0, ?)`
+  )
+    .bind(userId, email, passwordHash, now)
+    .run();
 
-  return new Response(JSON.stringify({ ok: true }), {
+  const token = randomToken();
+  const tokenHash = await sha256Hex(token);
+  const expiresAt = now + 60 * 60;
+  await env.DB.prepare(
+    `INSERT INTO email_verifications (token, user_id, expires_at, used) VALUES (?, ?, ?, 0)`
+  )
+    .bind(tokenHash, userId, expiresAt)
+    .run();
+
+  const link = `${url.origin}/auth/verify-email?token=${token}`;
+  await sendVerificationEmail(env, email, link);
+
+  // No session yet — the account can't log in until the link is clicked.
+  return new Response(JSON.stringify({ ok: true, verification_required: true }), {
     status: 200,
-    headers: { "Content-Type": "application/json", "Set-Cookie": sessionCookie(sessionId) },
+    headers: { "Content-Type": "application/json" },
+  });
+}
+
+async function handleVerifyEmail(request: Request, env: Env): Promise<Response> {
+  const url = new URL(request.url);
+  const token = url.searchParams.get("token");
+  if (!token) {
+    return new Response("Missing token", { status: 400 });
+  }
+  const tokenHash = await sha256Hex(token);
+
+  const row = await env.DB.prepare(
+    `SELECT user_id, expires_at, used FROM email_verifications WHERE token = ?`
+  )
+    .bind(tokenHash)
+    .first<{ user_id: string; expires_at: number; used: number }>();
+
+  const now = Math.floor(Date.now() / 1000);
+  if (!row || row.used || row.expires_at < now) {
+    return new Response("Invalid or expired link", { status: 400 });
+  }
+
+  await env.DB.prepare(`UPDATE email_verifications SET used = 1 WHERE token = ?`)
+    .bind(tokenHash)
+    .run();
+  await env.DB.prepare(`UPDATE users SET email_verified = 1 WHERE id = ?`)
+    .bind(row.user_id)
+    .run();
+
+  const sessionId = await issueSession(env, row.user_id);
+
+  return new Response(null, {
+    status: 302,
+    headers: {
+      Location: "/dashboard",
+      "Set-Cookie": sessionCookie(sessionId),
+    },
   });
 }
 
@@ -504,9 +601,11 @@ async function handleAuthLogin(request: Request, env: Env): Promise<Response> {
     return new Response("Too many attempts, try again later", { status: 429 });
   }
 
-  const user = await env.DB.prepare(`SELECT id, password_hash FROM users WHERE email = ?`)
+  const user = await env.DB.prepare(
+    `SELECT id, password_hash, email_verified FROM users WHERE email = ?`
+  )
     .bind(email)
-    .first<{ id: string; password_hash: string | null }>();
+    .first<{ id: string; password_hash: string | null; email_verified: number }>();
 
   // Always run the PBKDF2 comparison, even for an unknown email or a
   // magic-link-only account with no password set, so response timing
@@ -515,6 +614,12 @@ async function handleAuthLogin(request: Request, env: Env): Promise<Response> {
 
   if (!user || !user.password_hash || !valid) {
     return new Response("Invalid email or password", { status: 401 });
+  }
+
+  if (!user.email_verified) {
+    return new Response("Please confirm your email address first — check your inbox", {
+      status: 403,
+    });
   }
 
   const sessionId = await issueSession(env, user.id);
@@ -997,6 +1102,9 @@ export default {
     }
     if (url.pathname === "/auth/register" && request.method === "POST") {
       return handleAuthRegister(request, env);
+    }
+    if (url.pathname === "/auth/verify-email" && request.method === "GET") {
+      return handleVerifyEmail(request, env);
     }
     if (url.pathname === "/auth/login" && request.method === "POST") {
       return handleAuthLogin(request, env);

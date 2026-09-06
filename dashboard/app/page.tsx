@@ -18,9 +18,14 @@ export default function LandingPage() {
           Push a build, get back a signed, hosted <span className="font-mono">appcast.xml</span>.
           Nothing to run, nothing to keep alive.
         </p>
-        <a href="/login" className="btn mt-6 inline-block">
-          Get started
-        </a>
+        <div className="mt-6 flex items-center gap-3">
+          <a href="/register" className="btn">
+            Sign up
+          </a>
+          <a href="/login" className="btn-secondary">
+            Log in
+          </a>
+        </div>
       </section>
 
       <section className="border-t border-line py-10">
@@ -85,12 +90,7 @@ export default function LandingPage() {
       </section>
 
       <footer className="border-t border-line py-8 text-xs text-ink/40">
-        <p>
-          casablanque@proton.me ·{" "}
-          <a href="/login" className="hover:text-ink/70 hover:underline">
-            Log in
-          </a>
-        </p>
+        <p>casablanque@proton.me</p>
       </footer>
     </main>
   );
