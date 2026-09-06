@@ -6,3 +6,4 @@ railcast
 .dev.vars
 *.patch
 *.zip
+*.diff
