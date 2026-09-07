@@ -1,4 +1,18 @@
-import { env } from "cloudflare:test";
+import { env, fetchMock } from "cloudflare:test";
+
+// Auth handlers call out to Resend to send magic-link/verification emails.
+// The pool runs the worker with a real (fake) RESEND_API_KEY, and without
+// this it would make a genuine network request to api.resend.com on every
+// test that registers a user or requests a magic link -- which 401s in CI
+// (no real key) and would also just be slow/flaky/order-dependent even
+// with a real one. Intercept it once for the whole file instead.
+fetchMock.activate();
+fetchMock.disableNetConnect();
+fetchMock
+  .get("https://api.resend.com")
+  .intercept({ method: "POST", path: "/emails" })
+  .reply(200, JSON.stringify({ id: "test-email-id" }))
+  .persist();
 
 // Mirrors migrations/0001_initial.sql. Kept inline (rather than reading the
 // .sql file from disk) because the pool runs this inside the workerd
