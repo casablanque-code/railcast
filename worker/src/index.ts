@@ -941,11 +941,21 @@ async function handleCreateVersion(request: Request, env: Env, appId: string): P
   const critical = body.critical ? 1 : 0;
   const phasedRolloutInterval = body.phased_rollout_interval;
 
-  if (!version || !build_number || !file_key || !file_size || !sha256 || !signature) {
+  if (!version || !file_key || !file_size || !sha256 || !signature) {
     return new Response(
-      "Missing required fields: version, build_number, file_key, file_size, sha256, signature",
+      "Missing required fields: version, file_key, file_size, sha256, signature",
       { status: 400 }
     );
+  }
+
+  let explicitBuild: number | null = null;
+  if (build_number !== undefined && build_number !== null) {
+    if (!Number.isInteger(build_number) || build_number <= 0) {
+      return new Response("build_number must be a positive integer, or omitted entirely", {
+        status: 400,
+      });
+    }
+    explicitBuild = build_number;
   }
 
   if (!SHA256_HEX_RE.test(sha256)) {
@@ -993,31 +1003,44 @@ async function handleCreateVersion(request: Request, env: Env, appId: string): P
   // would either silently vanish (fine) or, worse, get treated as "newer"
   // by a client that's confused about ordering. Enforce it server-side
   // rather than trusting the CLI/build script to always get it right.
-  const latest = await env.DB.prepare(
-    `SELECT MAX(build_number) as max_build FROM versions WHERE app_id = ? AND channel = ?`
-  )
-    .bind(appId, channel)
-    .first<{ max_build: number | null }>();
+  // Only relevant when the caller passed an explicit number — if they
+  // didn't, the INSERT below computes the next one itself, atomically.
+  if (explicitBuild !== null) {
+    const latest = await env.DB.prepare(
+      `SELECT MAX(build_number) as max_build FROM versions WHERE app_id = ? AND channel = ?`
+    )
+      .bind(appId, channel)
+      .first<{ max_build: number | null }>();
 
-  if (latest?.max_build != null && build_number <= latest.max_build) {
-    return new Response(
-      `build_number ${build_number} is not greater than the current latest (${latest.max_build}) on channel "${channel}"`,
-      { status: 409 }
-    );
+    if (latest?.max_build != null && explicitBuild <= latest.max_build) {
+      return new Response(
+        `build_number ${explicitBuild} is not greater than the current latest (${latest.max_build}) on channel "${channel}"`,
+        { status: 409 }
+      );
+    }
   }
 
   const createdAt = Math.floor(Date.now() / 1000);
 
-  await env.DB.prepare(
+  // COALESCE(?, ...) picks the explicit build number when given, or computes
+  // "current max on this channel + 1" (1 if there isn't one yet) in the same
+  // statement — a single INSERT is atomic in SQLite, so this can't race with
+  // a concurrent publish the way a separate SELECT-then-INSERT could.
+  const inserted = await env.DB.prepare(
     `INSERT INTO versions
       (app_id, channel, version, build_number, file_key, file_size, sha256, signature, release_notes, critical, phased_rollout_interval, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+     SELECT ?, ?, ?,
+       COALESCE(?, (SELECT COALESCE(MAX(build_number), 0) FROM versions WHERE app_id = ? AND channel = ?) + 1),
+       ?, ?, ?, ?, ?, ?, ?, ?
+     RETURNING build_number`
   )
     .bind(
       appId,
       channel,
       version,
-      build_number,
+      explicitBuild,
+      appId,
+      channel,
       file_key,
       file_size,
       sha256,
@@ -1027,14 +1050,16 @@ async function handleCreateVersion(request: Request, env: Env, appId: string): P
       phasedRolloutInterval ?? null,
       createdAt
     )
-    .run();
+    .first<{ build_number: number }>();
+
+  const finalBuildNumber = inserted!.build_number;
 
   return new Response(
     JSON.stringify({
       app_id: appId,
       channel,
       version,
-      build_number,
+      build_number: finalBuildNumber,
       appcast_url: `/${appId}/appcast.xml?channel=${encodeURIComponent(channel)}`,
     }),
     { status: 201, headers: { "Content-Type": "application/json" } }

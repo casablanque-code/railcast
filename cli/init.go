@@ -88,7 +88,7 @@ func cmdInit(args []string) {
 	fmt.Println("Tip: export RAILCAST_TOKEN=" + *token + " in your shell so you don't have to pass --token every time.")
 	fmt.Println()
 	fmt.Println("Next: publish a build from this directory")
-	fmt.Println("  railcast publish --version 1.0.0 --build 1 --file <path> --token <token>")
+	fmt.Println("  railcast publish --version 1.0.0 --file <path> --token <token>")
 	fmt.Println()
 	printBox(
 		"Add these to your app's Info.plist",

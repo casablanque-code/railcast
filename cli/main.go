@@ -43,9 +43,11 @@ Usage:
   railcast init --app <name> --token <token>
       Create an app and generate its signing key. Start here.
 
-  railcast publish --version <v> --build <n> --file <path> --token <token>
+  railcast publish --version <v> --file <path> --token <token>
       Sign and publish a build. Reads --app/--key from .railcast.json
       automatically if you run it from the same directory as 'init'.
+      --build is optional — omit it and Railcast assigns the next build
+      number for that channel itself (it's printed after publishing).
       Add --critical or --phased-rollout <seconds> for Sparkle's staged
       rollout controls — see 'railcast publish --help' for the full list.
 

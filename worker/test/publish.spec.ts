@@ -64,6 +64,37 @@ async function publishVersion(token: string, appId: string, version: string, bui
   });
 }
 
+// Same as publishVersion, but omits build_number entirely — the CLI does
+// this when the person doesn't pass --build, and the server is expected to
+// pick the next one itself.
+async function publishVersionAutoBuild(
+  token: string,
+  appId: string,
+  version: string,
+  channel?: string
+) {
+  const filename = `MyApp-${version}.zip`;
+  const { file_key, file_size, sha256 } = await uploadBuild(
+    token,
+    appId,
+    filename,
+    `bytes for ${version}`
+  );
+
+  return SELF.fetch(`https://railcast.test/${appId}/versions`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+    body: JSON.stringify({
+      version,
+      channel,
+      file_key,
+      file_size,
+      sha256,
+      signature: `sig-${version}`,
+    }),
+  });
+}
+
 describe("appcast.xml", () => {
   it("404s for an app with no published versions", async () => {
     const res = await SELF.fetch("https://railcast.test/unknown-app/appcast.xml");
@@ -401,6 +432,49 @@ describe("publish flow", () => {
     const xml = await appcastRes.text();
     expect(xml).toContain("2.2.2");
     expect(xml).not.toContain("1.1.1");
+  });
+
+  it("auto-assigns build_number when it's omitted, sequentially per channel", async () => {
+    const { token, appId } = await seedUserAppAndToken();
+
+    const first = await publishVersionAutoBuild(token, appId, "1.0.0");
+    expect(first.status).toBe(201);
+    const firstBody = await first.json<{ build_number: number }>();
+    expect(firstBody.build_number).toBe(1);
+
+    const second = await publishVersionAutoBuild(token, appId, "2.0.0");
+    expect(second.status).toBe(201);
+    const secondBody = await second.json<{ build_number: number }>();
+    expect(secondBody.build_number).toBe(2);
+
+    // An explicit build_number that jumps ahead is still respected ...
+    const jump = await publishVersion(token, appId, "3.0.0", 10);
+    expect(jump.status).toBe(201);
+
+    // ... and the next omitted one picks up from there, not from where the
+    // auto sequence had been (11, not 3).
+    const afterJump = await publishVersionAutoBuild(token, appId, "4.0.0");
+    const afterJumpBody = await afterJump.json<{ build_number: number }>();
+    expect(afterJumpBody.build_number).toBe(11);
+  });
+
+  it("auto-assigned build_number tracks stable and beta independently", async () => {
+    const { token, appId } = await seedUserAppAndToken();
+    await env.DB.prepare(`UPDATE apps SET beta_token = ? WHERE id = ?`)
+      .bind("beta-secret", appId)
+      .run();
+
+    const stable1 = await publishVersionAutoBuild(token, appId, "1.0.0");
+    const stable1Body = await stable1.json<{ build_number: number }>();
+    expect(stable1Body.build_number).toBe(1);
+
+    const beta1 = await publishVersionAutoBuild(token, appId, "1.0.0-beta", "beta");
+    const beta1Body = await beta1.json<{ build_number: number }>();
+    expect(beta1Body.build_number).toBe(1);
+
+    const stable2 = await publishVersionAutoBuild(token, appId, "1.0.1");
+    const stable2Body = await stable2.json<{ build_number: number }>();
+    expect(stable2Body.build_number).toBe(2);
   });
 
   it("a fresh build_number on a different channel is independent of stable", async () => {

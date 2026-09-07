@@ -40,7 +40,7 @@ func cmdPublish(args []string) {
 	appID := fs.String("app", appDefault, "app id from 'railcast init' (not the --app name you gave init) — defaults to .railcast.json in this directory")
 	filePath := fs.String("file", "", "path to the build archive/pkg to publish (required)")
 	version := fs.String("version", "", "short version string, e.g. 1.2.0 (required)")
-	buildNumber := fs.Int("build", 0, "monotonically increasing build number (required)")
+	buildNumber := fs.Int("build", 0, "build number for this release (optional — omit it and Railcast assigns the next one for this channel automatically)")
 	channel := fs.String("channel", "stable", "release channel: stable | beta")
 	notes := fs.String("notes", "", "release notes (plain text or markdown)")
 	notesFile := fs.String("notes-file", "", "path to a release notes file (overrides --notes)")
@@ -62,9 +62,6 @@ func cmdPublish(args []string) {
 	if *version == "" {
 		missing = append(missing, "--version")
 	}
-	if *buildNumber <= 0 {
-		missing = append(missing, "--build")
-	}
 	if *keyPath == "" {
 		missing = append(missing, "--key (or run 'railcast init' in this directory first)")
 	}
@@ -78,6 +75,9 @@ func cmdPublish(args []string) {
 
 	if *phasedRollout < 0 {
 		fail("--phased-rollout must be 0 or a positive number of seconds")
+	}
+	if *buildNumber < 0 {
+		fail("--build must be a positive integer, or omitted entirely to auto-assign the next one")
 	}
 
 	if *notesFile != "" {
@@ -106,7 +106,11 @@ func cmdPublish(args []string) {
 
 	filename := filepath.Base(*filePath)
 
-	fmt.Printf("Publishing %s v%s (build %d) on channel %q...\n", filename, *version, *buildNumber, *channel)
+	if *buildNumber > 0 {
+		fmt.Printf("Publishing %s v%s (build %d) on channel %q...\n", filename, *version, *buildNumber, *channel)
+	} else {
+		fmt.Printf("Publishing %s v%s (build: auto-assigned) on channel %q...\n", filename, *version, *channel)
+	}
 	fmt.Printf("  sha256: %s\n", sha256Hex)
 	if *critical {
 		fmt.Println("  critical: yes")
@@ -144,6 +148,7 @@ func cmdPublish(args []string) {
 
 	fmt.Println()
 	fmt.Println("Published.")
+	fmt.Printf("  build: %d\n", result.BuildNumber)
 	fmt.Printf("  appcast: %s%s\n", *baseURL, result.AppcastURL)
 }
 
@@ -196,7 +201,7 @@ func doUpload(baseURL, token, appID, filename, sha256Hex string, data []byte) (*
 	}
 	if resp.StatusCode == http.StatusConflict {
 		return nil, fmt.Errorf(
-			"%q was already published under this app — rename the file or bump the version/build so it gets a new filename",
+			"%q was already published for this app, and filenames can't be reused once published (bumping --version or --build alone won't help). Rename the archive itself, e.g. include the version in the filename, and try again",
 			filename,
 		)
 	}
@@ -233,13 +238,17 @@ type createVersionRequest struct {
 func doCreateVersion(r createVersionRequest) (*createVersionResponse, error) {
 	payload := map[string]interface{}{
 		"version":       r.Version,
-		"build_number":  r.BuildNumber,
 		"channel":       r.Channel,
 		"file_key":      r.FileKey,
 		"file_size":     r.FileSize,
 		"sha256":        r.SHA256,
 		"signature":     r.Signature,
 		"release_notes": r.Notes,
+	}
+	// Omitted (not just zero/absent) when --build wasn't passed, so the
+	// server can tell "auto-assign one" apart from "the build number is 0".
+	if r.BuildNumber > 0 {
+		payload["build_number"] = r.BuildNumber
 	}
 	if r.Critical {
 		payload["critical"] = true
