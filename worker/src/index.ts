@@ -390,7 +390,14 @@ async function handleAuthRequest(request: Request, env: Env): Promise<Response> 
   const url = new URL(request.url);
   const link = `${url.origin}/auth/verify?token=${token}`;
 
-  await sendMagicLinkEmail(env, email, link);
+  try {
+    await sendMagicLinkEmail(env, email, link);
+  } catch (err) {
+    console.error("Failed to send magic-link email:", err);
+    return new Response("Couldn't send the login email right now -- try again in a bit", {
+      status: 502,
+    });
+  }
 
   return new Response(JSON.stringify({ ok: true, message: "Check your email" }), {
     status: 200,
@@ -533,9 +540,21 @@ async function handleAuthRegister(request: Request, env: Env): Promise<Response>
     .run();
 
   const link = `${url.origin}/auth/verify-email?token=${token}`;
-  await sendVerificationEmail(env, email, link);
+  try {
+    await sendVerificationEmail(env, email, link);
+  } catch (err) {
+    console.error("Failed to send verification email:", err);
+    // Roll back the half-created account rather than leaving an orphaned,
+    // never-confirmable row the person can't retry registering against
+    // (their next /auth/register attempt would 409 on it forever).
+    await env.DB.prepare(`DELETE FROM email_verifications WHERE token = ?`).bind(tokenHash).run();
+    await env.DB.prepare(`DELETE FROM users WHERE id = ?`).bind(userId).run();
+    return new Response("Couldn't send the confirmation email right now -- try again in a bit", {
+      status: 502,
+    });
+  }
 
-  // No session yet — the account can't log in until the link is clicked.
+  // No session yet -- the account can't log in until the link is clicked.
   return new Response(JSON.stringify({ ok: true, verification_required: true }), {
     status: 200,
     headers: { "Content-Type": "application/json" },

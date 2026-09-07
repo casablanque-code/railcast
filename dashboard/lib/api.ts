@@ -22,12 +22,18 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   });
 
   if (!res.ok) {
-    let message = `Request failed (${res.status})`;
+    // Most worker endpoints return a plain-text error body (e.g.
+    // `new Response("Invalid email or password", { status: 401 })`), not
+    // JSON — read as text first and only try to unwrap a {message}/{error}
+    // shape on top of that, so plain-text bodies still surface as-is
+    // instead of silently falling back to "Request failed (401)".
+    const text = await res.text().catch(() => "");
+    let message = text.trim() || `Request failed (${res.status})`;
     try {
-      const body = (await res.json()) as { message?: string; error?: string };
+      const body = JSON.parse(text) as { message?: string; error?: string };
       message = body.message ?? body.error ?? message;
     } catch {
-      // response wasn't JSON — keep the generic message
+      // not JSON — the raw text is already the message, keep it
     }
     throw new ApiError(res.status, message);
   }
