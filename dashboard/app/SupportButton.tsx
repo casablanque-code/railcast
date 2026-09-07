@@ -53,7 +53,7 @@ export function SupportButton() {
         aria-expanded={open}
         className="text-xs text-ink/50 transition hover:text-ink"
       >
-        Support ♥
+        Support <span className="text-[#800020]">♥</span>
       </button>
 
       {open && (
