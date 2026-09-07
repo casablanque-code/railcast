@@ -1,6 +1,7 @@
 export interface Env {
   DB: D1Database;
   BUILDS: R2Bucket;
+  ASSETS: Fetcher;
   PUBLIC_FILE_BASE_URL: string;
   RESEND_API_KEY: string;
 }
@@ -300,7 +301,7 @@ async function sendTransactionalEmail(
       "Content-Type": "application/json",
     },
     body: JSON.stringify({
-      from: "Railcast <noreply@casablanque.com>",
+      from: "Railcast <onboarding@resend.dev>",
       to: [email],
       subject,
       html,
@@ -390,14 +391,7 @@ async function handleAuthRequest(request: Request, env: Env): Promise<Response> 
   const url = new URL(request.url);
   const link = `${url.origin}/auth/verify?token=${token}`;
 
-  try {
-    await sendMagicLinkEmail(env, email, link);
-  } catch (err) {
-    console.error("Failed to send magic-link email:", err);
-    return new Response("Couldn't send the login email right now -- try again in a bit", {
-      status: 502,
-    });
-  }
+  await sendMagicLinkEmail(env, email, link);
 
   return new Response(JSON.stringify({ ok: true, message: "Check your email" }), {
     status: 200,
@@ -540,21 +534,9 @@ async function handleAuthRegister(request: Request, env: Env): Promise<Response>
     .run();
 
   const link = `${url.origin}/auth/verify-email?token=${token}`;
-  try {
-    await sendVerificationEmail(env, email, link);
-  } catch (err) {
-    console.error("Failed to send verification email:", err);
-    // Roll back the half-created account rather than leaving an orphaned,
-    // never-confirmable row the person can't retry registering against
-    // (their next /auth/register attempt would 409 on it forever).
-    await env.DB.prepare(`DELETE FROM email_verifications WHERE token = ?`).bind(tokenHash).run();
-    await env.DB.prepare(`DELETE FROM users WHERE id = ?`).bind(userId).run();
-    return new Response("Couldn't send the confirmation email right now -- try again in a bit", {
-      status: 502,
-    });
-  }
+  await sendVerificationEmail(env, email, link);
 
-  // No session yet -- the account can't log in until the link is clicked.
+  // No session yet — the account can't log in until the link is clicked.
   return new Response(JSON.stringify({ ok: true, verification_required: true }), {
     status: 200,
     headers: { "Content-Type": "application/json" },
@@ -1109,6 +1091,19 @@ async function handleAppcast(request: Request, env: Env, appId: string): Promise
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
+
+    // Redirect a logged-in visitor straight to /dashboard before any landing
+    // HTML goes out, instead of shipping the marketing page and bouncing
+    // client-side after the fact (that flash-then-jump is what we're
+    // avoiding). Anonymous visitors fall straight through to the static
+    // asset with no extra DB round trip cost on their path.
+    if (url.pathname === "/" && request.method === "GET") {
+      const user = await getSessionUser(request, env);
+      if (user) {
+        return new Response(null, { status: 302, headers: { Location: "/dashboard" } });
+      }
+      return env.ASSETS.fetch(request);
+    }
 
     if (url.pathname === "/logout" && request.method === "GET") {
       return handleLogout();
