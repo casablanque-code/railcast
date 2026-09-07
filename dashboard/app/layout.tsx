@@ -16,7 +16,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
               <span className="inline-block h-2 w-2 rounded-full bg-accent" />
               railcast
             </a>
-            <span className="font-mono text-xs text-ink/40">v0.1.0</span>
+            <span className="font-mono text-xs text-ink/40">v0.4.0</span>
           </header>
           {children}
         </div>
