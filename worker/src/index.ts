@@ -300,7 +300,7 @@ async function sendTransactionalEmail(
       "Content-Type": "application/json",
     },
     body: JSON.stringify({
-      from: "Railcast <onboarding@resend.dev>",
+      from: "Railcast <noreply@casablanque.com>",
       to: [email],
       subject,
       html,
