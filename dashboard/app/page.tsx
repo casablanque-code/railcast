@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import { CommandBlock } from "./CommandBlock";
+import { LandingGate } from "./LandingGate";
 
 export const metadata: Metadata = {
   title: "Railcast — the backend Sparkle needs",
@@ -8,6 +9,7 @@ export const metadata: Metadata = {
 export default function LandingPage() {
   return (
     <main>
+      <LandingGate />
       <section className="py-6">
         <h1 className="text-2xl font-semibold leading-snug tracking-tight sm:text-3xl">
           Sparkle is the updater.
