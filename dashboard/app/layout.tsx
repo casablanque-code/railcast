@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import "./globals.css";
+import { SupportButton } from "./SupportButton";
 
 export const metadata: Metadata = {
   title: "Railcast",
@@ -16,7 +17,10 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
               <span className="inline-block h-2 w-2 rounded-full bg-accent" />
               railcast
             </a>
-            <span className="font-mono text-xs text-ink/40">v0.4.0</span>
+            <div className="flex items-center gap-4">
+              <SupportButton />
+              <span className="font-mono text-xs text-ink/40">v0.4.0</span>
+            </div>
           </header>
           {children}
         </div>
