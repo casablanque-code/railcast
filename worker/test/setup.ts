@@ -1,18 +1,22 @@
-import { env, fetchMock } from "cloudflare:test";
+import { env } from "cloudflare:test";
 
 // Auth handlers call out to Resend to send magic-link/verification emails.
-// The pool runs the worker with a real (fake) RESEND_API_KEY, and without
-// this it would make a genuine network request to api.resend.com on every
-// test that registers a user or requests a magic link -- which 401s in CI
-// (no real key) and would also just be slow/flaky/order-dependent even
-// with a real one. Intercept it once for the whole file instead.
-fetchMock.activate();
-fetchMock.disableNetConnect();
-fetchMock
-  .get("https://api.resend.com")
-  .intercept({ method: "POST", path: "/emails" })
-  .reply(200, JSON.stringify({ id: "test-email-id" }))
-  .persist();
+// The pool runs the worker with a real (fake) RESEND_API_KEY, so a genuine
+// call to api.resend.com would 401 in CI (and would be slow/flaky even with
+// a real key). This test file executes inside the same workerd runtime as
+// the worker code under test, so overriding the global fetch here also
+// affects calls made from inside index.ts.
+const realFetch = globalThis.fetch;
+globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+  const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+  if (url.startsWith("https://api.resend.com")) {
+    return new Response(JSON.stringify({ id: "test-email-id" }), {
+      status: 200,
+      headers: { "Content-Type": "application/json" },
+    });
+  }
+  return realFetch(input, init);
+}) as typeof fetch;
 
 // Mirrors migrations/0001_initial.sql. Kept inline (rather than reading the
 // .sql file from disk) because the pool runs this inside the workerd
