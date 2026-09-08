@@ -1,6 +1,6 @@
 "use client";
 
-import { FormEvent, useEffect, useState } from "react";
+import { useEffect, useState } from "react";
 import { api, ApiError, type App, type Me, type TokenPreview } from "@/lib/api";
 import { CommandBlock } from "../CommandBlock";
 import { CopyButton } from "../CopyButton";
@@ -21,11 +21,6 @@ export default function DashboardPage() {
   const [apps, setApps] = useState<App[] | null>(null);
   const [tokens, setTokens] = useState<TokenPreview[] | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
-
-  const [appName, setAppName] = useState("");
-  const [publicKey, setPublicKey] = useState("");
-  const [creatingApp, setCreatingApp] = useState(false);
-  const [appError, setAppError] = useState<string | null>(null);
 
   const [creatingToken, setCreatingToken] = useState(false);
   const [newToken, setNewToken] = useState<string | null>(null);
@@ -56,22 +51,6 @@ export default function DashboardPage() {
         setLoadError("Couldn't reach the API. Check that the Worker is deployed and reachable.");
       });
   }, []);
-
-  async function onCreateApp(e: FormEvent) {
-    e.preventDefault();
-    setCreatingApp(true);
-    setAppError(null);
-    try {
-      await api.createApp(appName, publicKey);
-      setAppName("");
-      setPublicKey("");
-      await refresh();
-    } catch (err) {
-      setAppError(err instanceof ApiError ? err.message : "Couldn't create the app");
-    } finally {
-      setCreatingApp(false);
-    }
-  }
 
   async function onCreateToken() {
     setCreatingToken(true);
@@ -273,6 +252,28 @@ export default function DashboardPage() {
 
       <section>
         <h2 className="mb-3 text-sm font-semibold uppercase tracking-wide text-ink/50">
+          4. Publish
+        </h2>
+        <div className="card">
+          <p className="text-sm text-ink/70">
+            Run this from the same directory as <span className="font-mono">init</span> — it
+            picks up the app and key automatically.
+          </p>
+          <CommandBlock className="mt-3" command="railcast publish --version 1.0.0 --file myapp-1.0.0.zip" />
+        </div>
+        <p className="mt-3 text-xs text-ink/50">
+          Updating later, e.g. to version 1.0.1: bump{" "}
+          <span className="font-mono">--version</span> and give the archive a{" "}
+          <span className="font-mono">new filename</span> (like{" "}
+          <span className="font-mono">myapp-1.0.1.zip</span>) — Railcast keeps every uploaded
+          filename permanently attached to its release, so reusing one fails.{" "}
+          <span className="font-mono">--build</span> is optional; Railcast assigns the next one
+          for you automatically.
+        </p>
+      </section>
+
+      <section>
+        <h2 className="mb-3 text-sm font-semibold uppercase tracking-wide text-ink/50">
           Your apps
         </h2>
 
@@ -288,60 +289,13 @@ export default function DashboardPage() {
         </div>
 
         {restApps.length > 0 && (
-          <details className="card mb-4">
+          <details className="card">
             <summary className="cursor-pointer text-sm font-medium text-ink/70">
               Show {restApps.length} more app{restApps.length === 1 ? "" : "s"}
             </summary>
             <div className="mt-4 space-y-3">{restApps.map(appRow)}</div>
           </details>
         )}
-
-        <details className="card">
-          <summary className="cursor-pointer text-sm font-medium text-ink/70">
-            Create an app manually instead
-          </summary>
-          <form onSubmit={onCreateApp} className="mt-4 space-y-4">
-            <div className="grid gap-4 sm:grid-cols-2">
-              <div>
-                <label className="label" htmlFor="app-name">
-                  App name
-                </label>
-                <input
-                  id="app-name"
-                  className="input"
-                  placeholder="My Menu Bar App"
-                  maxLength={128}
-                  required
-                  value={appName}
-                  onChange={(e) => setAppName(e.target.value)}
-                />
-                <p className="mt-1 text-xs text-ink/40">
-                  Just a label for you — the public feed URL is generated separately and
-                  doesn&apos;t need to be unique.
-                </p>
-              </div>
-              <div>
-                <label className="label" htmlFor="public-key">
-                  Public key (from railcast keygen)
-                </label>
-                <input
-                  id="public-key"
-                  className="input font-mono"
-                  placeholder="base64…"
-                  required
-                  value={publicKey}
-                  onChange={(e) => setPublicKey(e.target.value)}
-                />
-              </div>
-            </div>
-            <div className="flex items-center gap-3">
-              <button type="submit" className="btn-secondary" disabled={creatingApp}>
-                {creatingApp ? "Creating…" : "Create app"}
-              </button>
-              {appError && <p className="text-sm text-red-600">{appError}</p>}
-            </div>
-          </form>
-        </details>
       </section>
     </main>
   );
