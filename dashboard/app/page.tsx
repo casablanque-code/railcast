@@ -58,7 +58,7 @@ export default function LandingPage() {
         <div className="mt-4 space-y-2">
           <CommandBlock command="curl -fsSL railcast.casablanque.com/install.sh | sh" />
           <CommandBlock command="railcast init --app myapp --token <token>" />
-          <CommandBlock command="railcast publish --version 1.0.0 --build 1 --file MyApp.zip --token <token>" />
+          <CommandBlock command="railcast publish --version 1.0.0 --file MyApp-1.0.0.zip --token <token>" />
         </div>
         <ul className="mt-3 space-y-1 font-mono text-xs text-ink/50">
           <li>✓ Signed</li>
