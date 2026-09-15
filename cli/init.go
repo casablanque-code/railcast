@@ -31,6 +31,7 @@ func cmdInit(args []string) {
 	token := fs.String("token", os.Getenv("RAILCAST_TOKEN"), "API token from the dashboard (defaults to $RAILCAST_TOKEN)")
 	baseURL := fs.String("base-url", "", "Railcast API base URL (default: "+defaultBaseURL+", override with $RAILCAST_BASE_URL)")
 	keyPath := fs.String("key", "", "where to save the private key (default: ./<app>.key)")
+	initialBuild := fs.Int("initial-build", 0, "if this app already shipped builds outside Railcast (e.g. your own CFBundleVersion counter), set this to the highest one — auto-assigned build numbers will start above it, avoiding a number that's <= a build already installed somewhere")
 	fs.Parse(args)
 	*baseURL = resolveBaseURL(*baseURL)
 
@@ -44,6 +45,9 @@ func cmdInit(args []string) {
 	if len(missing) > 0 {
 		fmt.Printf("missing required flags: %s\n", strings.Join(missing, ", "))
 		os.Exit(1)
+	}
+	if *initialBuild < 0 {
+		fail("--initial-build must be 0 or a positive integer")
 	}
 
 	if *keyPath == "" {
@@ -62,7 +66,7 @@ func cmdInit(args []string) {
 
 	fmt.Printf("Creating %q and registering its signing key...\n", *appName)
 
-	app, err := doCreateApp(*baseURL, *token, *appName, pubB64)
+	app, err := doCreateApp(*baseURL, *token, *appName, pubB64, *initialBuild)
 	if err != nil {
 		fail("could not create the app: %v", err)
 	}
@@ -85,10 +89,14 @@ func cmdInit(args []string) {
 	fmt.Println("Done. Keep this file safe — losing it means you can't publish updates for this app again:")
 	fmt.Printf("  %s\n", *keyPath)
 	fmt.Println()
+	if *initialBuild > 0 {
+		fmt.Printf("Auto-assigned build numbers on this app will start at %d.\n", *initialBuild+1)
+		fmt.Println()
+	}
 	fmt.Println("Tip: export RAILCAST_TOKEN=" + *token + " in your shell so you don't have to pass --token every time.")
 	fmt.Println()
 	fmt.Println("Next: publish a build from this directory")
-	fmt.Println("  railcast publish --version 1.0.0 --file <path> --token <token>")
+	fmt.Println("  railcast publish --file <path> --token <token>")
 	fmt.Println()
 	printBox(
 		"Add these to your app's Info.plist",
@@ -104,17 +112,21 @@ func cmdInit(args []string) {
 	}
 }
 
-func doCreateApp(baseURL, token, name, publicKeyB64 string) (*createAppResponse, error) {
-	payload, err := json.Marshal(map[string]string{
+func doCreateApp(baseURL, token, name, publicKeyB64 string, initialBuild int) (*createAppResponse, error) {
+	payload := map[string]interface{}{
 		"name":                name,
 		"signing_public_key": publicKeyB64,
-	})
+	}
+	if initialBuild > 0 {
+		payload["initial_build_number"] = initialBuild
+	}
+	body, err := json.Marshal(payload)
 	if err != nil {
 		return nil, err
 	}
 
 	url := fmt.Sprintf("%s/api/apps", strings.TrimRight(baseURL, "/"))
-	req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(payload))
+	req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
 		return nil, err
 	}
@@ -127,14 +139,14 @@ func doCreateApp(baseURL, token, name, publicKeyB64 string) (*createAppResponse,
 	}
 	defer resp.Body.Close()
 
-	body, _ := io.ReadAll(resp.Body)
+	respBody, _ := io.ReadAll(resp.Body)
 
 	if resp.StatusCode != http.StatusCreated {
-		return nil, fmt.Errorf("server returned %d: %s", resp.StatusCode, string(body))
+		return nil, fmt.Errorf("server returned %d: %s", resp.StatusCode, string(respBody))
 	}
 
 	var out createAppResponse
-	if err := json.Unmarshal(body, &out); err != nil {
+	if err := json.Unmarshal(respBody, &out); err != nil {
 		return nil, fmt.Errorf("could not parse response: %w", err)
 	}
 	return &out, nil

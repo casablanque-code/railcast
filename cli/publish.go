@@ -39,8 +39,8 @@ func cmdPublish(args []string) {
 	fs := flag.NewFlagSet("publish", flag.ExitOnError)
 	appID := fs.String("app", appDefault, "app id from 'railcast init' (not the --app name you gave init) — defaults to .railcast.json in this directory")
 	filePath := fs.String("file", "", "path to the build archive/pkg to publish (required)")
-	version := fs.String("version", "", "short version string, e.g. 1.2.0 (required)")
-	buildNumber := fs.Int("build", 0, "build number for this release (optional — omit it and Railcast assigns the next one for this channel automatically)")
+	version := fs.String("version", "", "short version string, e.g. 1.2.0 (optional for .zip archives — read from CFBundleShortVersionString in the .app's Info.plist if omitted)")
+	buildNumber := fs.Int("build", 0, "build number for this release (optional for .zip archives — read from CFBundleVersion in the .app's Info.plist if omitted; falls back to Railcast auto-assigning the next one for this channel if that can't be read either)")
 	channel := fs.String("channel", "stable", "release channel: stable | beta")
 	notes := fs.String("notes", "", "release notes (plain text or markdown)")
 	notesFile := fs.String("notes-file", "", "path to a release notes file (overrides --notes)")
@@ -58,9 +58,6 @@ func cmdPublish(args []string) {
 	}
 	if *filePath == "" {
 		missing = append(missing, "--file")
-	}
-	if *version == "" {
-		missing = append(missing, "--version")
 	}
 	if *keyPath == "" {
 		missing = append(missing, "--key (or run 'railcast init' in this directory first)")
@@ -106,8 +103,47 @@ func cmdPublish(args []string) {
 
 	filename := filepath.Base(*filePath)
 
+	// Prefer the truth baked into the archive itself over anything typed by
+	// hand — a zip's own Info.plist is what's actually going to run on
+	// someone's Mac, so it can't drift from --version/--build the way a
+	// separate counter (typed here, or auto-assigned server-side) could.
+	var detected *bundleInfo
+	if strings.HasSuffix(strings.ToLower(filename), ".zip") {
+		info, err := readBundleInfoFromZip(*filePath)
+		if err == nil {
+			detected = info
+		} else if *version == "" || *buildNumber == 0 {
+			// Only worth mentioning if we actually needed it — if both
+			// --version and --build were given explicitly, detection
+			// failing is a non-event.
+			fmt.Printf("Note: couldn't read version info from %s automatically (%v)\n", filename, err)
+		}
+	}
+
+	if *version == "" {
+		if detected == nil {
+			fail("could not determine --version automatically (not a .zip, or no readable Info.plist inside it) — pass --version explicitly")
+		}
+		*version = detected.ShortVersion
+		fmt.Printf("Detected version from Info.plist: %s\n", *version)
+	}
+
+	effectiveBuild := *buildNumber
+	if effectiveBuild == 0 && detected != nil {
+		effectiveBuild = detected.BuildNumber
+		fmt.Printf("Detected build number from Info.plist: %d\n", effectiveBuild)
+	} else if effectiveBuild == 0 {
+		fmt.Println(
+			"Note: no build number detected or given — Railcast will auto-assign the next one for " +
+				"this channel. If this app already shipped builds outside Railcast, make sure that's " +
+				"still higher than any of them (see --initial-build in 'railcast init --help').",
+		)
+	}
+
 	if *buildNumber > 0 {
 		fmt.Printf("Publishing %s v%s (build %d) on channel %q...\n", filename, *version, *buildNumber, *channel)
+	} else if effectiveBuild > 0 {
+		fmt.Printf("Publishing %s v%s (build %d) on channel %q...\n", filename, *version, effectiveBuild, *channel)
 	} else {
 		fmt.Printf("Publishing %s v%s (build: auto-assigned) on channel %q...\n", filename, *version, *channel)
 	}
@@ -132,7 +168,7 @@ func cmdPublish(args []string) {
 		Token:         *token,
 		AppID:         *appID,
 		Version:       *version,
-		BuildNumber:   *buildNumber,
+		BuildNumber:   effectiveBuild,
 		Channel:       *channel,
 		FileKey:       upload.FileKey,
 		FileSize:      upload.FileSize,

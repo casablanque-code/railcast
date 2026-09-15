@@ -43,11 +43,14 @@ Usage:
   railcast init --app <name> --token <token>
       Create an app and generate its signing key. Start here.
 
-  railcast publish --version <v> --file <path> --token <token>
+  railcast publish --file <path> --token <token>
       Sign and publish a build. Reads --app/--key from .railcast.json
       automatically if you run it from the same directory as 'init'.
-      --build is optional — omit it and Railcast assigns the next build
-      number for that channel itself (it's printed after publishing).
+      --version and --build are optional for .zip archives — read straight
+      from the .app's own Info.plist (CFBundleShortVersionString /
+      CFBundleVersion) inside the zip, so there's nothing to type or keep
+      in sync by hand. Pass them explicitly to override, or for non-.zip
+      archives (.dmg/.pkg) where this can't be auto-detected.
       Add --critical or --phased-rollout <seconds> for Sparkle's staged
       rollout controls — see 'railcast publish --help' for the full list.
 

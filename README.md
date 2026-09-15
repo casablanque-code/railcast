@@ -47,27 +47,34 @@ This generates an Ed25519 signing key, registers a new app on the server, and sa
 Then publish the first build:
 
 ```bash
-railcast publish --version 1.0.0 --file testapp-1.0.0.zip
+railcast publish --file testapp-1.0.0.zip
 ```
 
-`--build` is optional — leave it out and Railcast assigns the next build number for that channel itself, printed after publishing (`build: 1`). You never have to track or remember it.
+`--version` and `--build` are both optional for a `.zip` — Railcast reads `CFBundleShortVersionString` and `CFBundleVersion` straight out of the `.app`'s own `Info.plist` inside the archive, so there's nothing to type or keep in sync by hand. It's printed back so you can double check:
+```
+Detected version from Info.plist: 1.0.0
+Detected build number from Info.plist: 42
+```
 
 ## Updating an existing app
 
 From the same directory (so `.railcast.json` is picked up):
 
 ```bash
-railcast publish --version 2.0.0 --file testapp-2.0.0.zip
+railcast publish --file testapp-2.0.0.zip
 ```
 
-- The archive file must have a **name Railcast hasn't seen before** for this app (see Gotchas below) — the filename itself has to change every release, bumping `--version` alone does not satisfy this. Baking the version into the filename (as above) is the simplest way to guarantee that.
-- If you do pass `--build` explicitly, it must be **strictly greater** than the previous build on that channel — the server rejects anything else. There's normally no reason to pass it; it exists for cases like mirroring build numbers from an external CI system.
+Bump `CFBundleShortVersionString`/`CFBundleVersion` in Xcode like you normally would before archiving — Railcast picks up whatever's actually in the zip, every time. There's no separate number to remember to bump on the Railcast side.
+
+- The archive file must still have a **name Railcast hasn't seen before** for this app (see Gotchas below) — the filename itself has to change every release, bumping the version alone does not satisfy this. Baking the version into the filename (as above) is the simplest way to guarantee that.
+- If you do pass `--version`/`--build` explicitly, they override whatever's in the zip. An explicit `--build` still has to be **strictly greater** than the previous build on that channel — the server rejects anything else.
+- For a `.dmg`/`.pkg` (or a `.zip` with no `.app` inside, or with a non-numeric `CFBundleVersion`), auto-detection isn't possible — pass `--version` explicitly, and see the Gotchas note on `--build` below.
 
 Optional flags for either a first publish or an update:
 
 | Flag | Purpose |
 |---|---|
-| `--build <n>` | Explicit build number, must be greater than the channel's current latest. Normally omitted — see above. |
+| `--build <n>` | Explicit build number, overriding what's detected from the archive (or Railcast's own auto-assign, if detection isn't possible). Must be greater than the channel's current latest — see Gotchas. |
 | `--channel beta` | Publishes to a separate channel instead of `stable`. Build-number ordering is tracked per channel, independently. |
 | `--notes "…"` | Plain text or Markdown release notes, shown in Sparkle's update dialog. |
 | `--notes-file path` | Same, read from a file — overrides `--notes` if both are given. |
@@ -79,7 +86,8 @@ Run `railcast publish --help` any time for the full, current flag list.
 ## Gotchas
 
 - **Upload filenames are permanent per app.** Once `appid/filename` has a published version attached, that exact filename can never be re-uploaded for that app — it's intentional (nothing should be able to silently swap the bytes behind an already-signed, already-published release). If you get `"...zip" was already published for this app`, the fix is to rename the archive, not to change `--version`/`--build`. Baking the version into the filename up front avoids ever hitting this.
-- **`--build` is optional, and per channel, not global.** Leave it out and Railcast auto-assigns the next one for that channel (starting at `1`); `stable` and `beta` each track their own count independently, so `beta` sitting on build `5` doesn't conflict with `stable` already being on `12`. Pass `--build` explicitly only if you have a specific reason to (e.g. mirroring a build number from external CI) — an explicit value still has to be strictly greater than that channel's current latest, or the publish is rejected.
+- **`--build`/`--version` are detected from the archive, not tracked by Railcast.** For a `.zip`, Railcast reads `CFBundleShortVersionString`/`CFBundleVersion` straight from the `.app`'s own `Info.plist` inside it — the same values already baked into what's running on someone's Mac, so there's no separate counter that can drift out of sync. This only works for `.zip` archives with a `.app` inside and a numeric `CFBundleVersion`; anything else (`.dmg`/`.pkg`, or a `.zip` where detection fails) falls back to a per-app, per-channel counter Railcast maintains itself (starting at `1`, `stable` and `beta` independent) — pass `--version` explicitly in that case, and see the next point for `--build`.
+- **If you're relying on Railcast's own counter (the fallback above), it doesn't know about builds you shipped before adopting Railcast.** Sparkle compares the appcast's build number against the installed app's own `CFBundleVersion` — if that's already at, say, `42` from your own tooling, and Railcast's counter starts fresh at `1`, existing users would never see the update (`1 < 42`). This isn't a concern if `.zip` auto-detection is working (see above) — it always reflects the real `CFBundleVersion`, so it can't fall behind. It only matters for `.dmg`/`.pkg` or undetectable `.zip`s: set a floor once, at `init` time — `railcast init --app myapp --initial-build 42` — and the counter starts at `43` instead. Forgot, and the app already exists? Pass an explicit `--build` higher than your last real one for the next publish; the counter picks up from there afterwards.
 - **The signing key never touches the server.** `init` generates it locally and only ever uploads the *public* half. If `<app>.key` is lost, there is no way to publish further updates to that app under the same `SUPublicEDKey` — you'd need a new app (new key, new feed URL, and existing installs would need to be pointed at it some other way, which Railcast doesn't automate).
 - **`--app` at `init` time is just a local label** — it picks the default key filename and shows up in your terminal, but the id Railcast actually uses (in the feed URL, in `--app` for `publish`) is a separate, server-generated id written into `.railcast.json`. You don't need it to be unique across all Railcast users.
 - **Publishing from a different machine or directory** (no local `.railcast.json`/key) means passing `--app <id>` and `--key <path>` explicitly to `publish` — copy both from wherever `init` originally ran. Don't run `init` again for an app you already have; that creates a brand-new app with a brand-new key, not a continuation of the old one.

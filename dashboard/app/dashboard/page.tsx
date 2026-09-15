@@ -259,16 +259,16 @@ export default function DashboardPage() {
             Run this from the same directory as <span className="font-mono">init</span> — it
             picks up the app and key automatically.
           </p>
-          <CommandBlock className="mt-3" command="railcast publish --version 1.0.0 --file myapp-1.0.0.zip" />
+          <CommandBlock className="mt-3" command="railcast publish --file myapp-1.0.0.zip" />
         </div>
         <p className="mt-3 text-xs text-ink/50">
-          Updating later, e.g. to version 1.0.1: bump{" "}
-          <span className="font-mono">--version</span> and give the archive a{" "}
+          No <span className="font-mono">--version</span> or <span className="font-mono">--build</span>{" "}
+          needed — for a <span className="font-mono">.zip</span>, Railcast reads them straight from
+          the <span className="font-mono">.app</span>&apos;s own <span className="font-mono">Info.plist</span>
+          {" "}inside it. Updating later: bump the version in Xcode as usual and give the archive a{" "}
           <span className="font-mono">new filename</span> (like{" "}
           <span className="font-mono">myapp-1.0.1.zip</span>) — Railcast keeps every uploaded
-          filename permanently attached to its release, so reusing one fails.{" "}
-          <span className="font-mono">--build</span> is optional; Railcast assigns the next one
-          for you automatically.
+          filename permanently attached to its release, so reusing one fails.
         </p>
       </section>
 

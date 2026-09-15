@@ -24,7 +24,7 @@ jobs:
       - run: npm test
 
   cli:
-    name: CLI (Go)
+    name: CLI (Go, Linux)
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -37,4 +37,24 @@ jobs:
           cache: false
       - run: go build ./...
       - run: go vet ./...
+      - run: go test ./... -v
+
+  cli-macos:
+    name: CLI (Go, macOS)
+    # Some cli tests only exercise real behavior on macOS (they shell out
+    # to /usr/libexec/PlistBuddy, which doesn't exist on Linux) — they
+    # self-skip there instead of failing, so this job is what actually
+    # proves that code path works. macos-latest runners are included free
+    # on GitHub-hosted runners for public repos; no separate Mac needed.
+    runs-on: macos-latest
+    defaults:
+      run:
+        working-directory: cli
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: cli/go.mod
+          cache: false
+      - run: go build ./...
       - run: go test ./... -v
