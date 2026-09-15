@@ -158,6 +158,135 @@ describe("GET /auth/verify-email", () => {
     );
     expect(reuse.status).toBe(400);
   });
+
+  it("only lets one of two concurrent requests for the same token succeed", async () => {
+    // Regression test for the SELECT-then-UPDATE race: two requests
+    // hitting /auth/verify-email with the same token at (near) the same
+    // time must not both read "used = 0" before either write lands. The
+    // handler now does an atomic UPDATE ... WHERE used = 0 RETURNING, so
+    // exactly one of the two concurrent calls should get the 302 and the
+    // other should get the 400 "invalid or expired" response.
+    const userId = crypto.randomUUID();
+    const email = `${crypto.randomUUID()}@example.com`;
+    const now = Math.floor(Date.now() / 1000);
+    const rawToken = "verify-race-" + crypto.randomUUID();
+
+    await env.DB.prepare(
+      `INSERT INTO users (id, email, password_hash, email_verified, created_at) VALUES (?, ?, ?, 0, ?)`
+    )
+      .bind(userId, email, "irrelevant-hash", now)
+      .run();
+    await env.DB.prepare(
+      `INSERT INTO email_verifications (token, user_id, expires_at, used) VALUES (?, ?, ?, 0)`
+    )
+      .bind(await sha256Hex(rawToken), userId, now + 3600)
+      .run();
+
+    const fire = () =>
+      SELF.fetch(`https://railcast.test/auth/verify-email?token=${rawToken}`, {
+        redirect: "manual",
+      });
+
+    const [a, b] = await Promise.all([fire(), fire()]);
+    const statuses = [a.status, b.status].sort();
+    expect(statuses).toEqual([302, 400]);
+
+    // Only one session should have ever been issued for this — sanity
+    // check that the "winner" really did complete the login flow rather
+    // than both partially succeeding.
+    const user = await env.DB.prepare(`SELECT email_verified FROM users WHERE id = ?`)
+      .bind(userId)
+      .first<{ email_verified: number }>();
+    expect(user?.email_verified).toBe(1);
+  });
+});
+
+describe("GET /auth/verify (magic link)", () => {
+  it("400s on a missing token", async () => {
+    const res = await SELF.fetch("https://railcast.test/auth/verify");
+    expect(res.status).toBe(400);
+  });
+
+  it("400s on an unknown token", async () => {
+    const res = await SELF.fetch("https://railcast.test/auth/verify?token=does-not-exist");
+    expect(res.status).toBe(400);
+  });
+
+  it("logs the user in and burns the token on reuse", async () => {
+    const email = `${crypto.randomUUID()}@example.com`;
+    const now = Math.floor(Date.now() / 1000);
+    const rawToken = "magic-" + crypto.randomUUID();
+
+    await env.DB.prepare(
+      `INSERT INTO magic_links (token, email, expires_at, used) VALUES (?, ?, ?, 0)`
+    )
+      .bind(await sha256Hex(rawToken), email, now + 900)
+      .run();
+
+    const res = await SELF.fetch(`https://railcast.test/auth/verify?token=${rawToken}`, {
+      redirect: "manual",
+    });
+    expect(res.status).toBe(302);
+    expect(res.headers.get("Set-Cookie")).toContain("session=");
+
+    const user = await env.DB.prepare(`SELECT email_verified FROM users WHERE email = ?`)
+      .bind(email)
+      .first<{ email_verified: number }>();
+    expect(user?.email_verified).toBe(1);
+
+    const reuse = await SELF.fetch(`https://railcast.test/auth/verify?token=${rawToken}`, {
+      redirect: "manual",
+    });
+    expect(reuse.status).toBe(400);
+  });
+
+  it("400s on an expired token instead of logging in", async () => {
+    const email = `${crypto.randomUUID()}@example.com`;
+    const now = Math.floor(Date.now() / 1000);
+    const rawToken = "magic-expired-" + crypto.randomUUID();
+
+    await env.DB.prepare(
+      `INSERT INTO magic_links (token, email, expires_at, used) VALUES (?, ?, ?, 0)`
+    )
+      .bind(await sha256Hex(rawToken), email, now - 1)
+      .run();
+
+    const res = await SELF.fetch(`https://railcast.test/auth/verify?token=${rawToken}`, {
+      redirect: "manual",
+    });
+    expect(res.status).toBe(400);
+  });
+
+  it("only lets one of two concurrent requests for the same token succeed", async () => {
+    // Same race as /auth/verify-email, for the magic-link path: the
+    // handler must consume the token with a single atomic
+    // UPDATE ... WHERE used = 0 RETURNING, not a SELECT followed by a
+    // separate UPDATE, or two near-simultaneous requests could both read
+    // "not used yet" and both log in / both create the account twice.
+    const email = `${crypto.randomUUID()}@example.com`;
+    const now = Math.floor(Date.now() / 1000);
+    const rawToken = "magic-race-" + crypto.randomUUID();
+
+    await env.DB.prepare(
+      `INSERT INTO magic_links (token, email, expires_at, used) VALUES (?, ?, ?, 0)`
+    )
+      .bind(await sha256Hex(rawToken), email, now + 900)
+      .run();
+
+    const fire = () =>
+      SELF.fetch(`https://railcast.test/auth/verify?token=${rawToken}`, { redirect: "manual" });
+
+    const [a, b] = await Promise.all([fire(), fire()]);
+    const statuses = [a.status, b.status].sort();
+    expect(statuses).toEqual([302, 400]);
+
+    // Exactly one user row should have been created for this email, even
+    // though both requests raced past the initial check concurrently.
+    const count = await env.DB.prepare(`SELECT COUNT(*) as c FROM users WHERE email = ?`)
+      .bind(email)
+      .first<{ c: number }>();
+    expect(count?.c).toBe(1);
+  });
 });
 
 describe("POST /auth/login", () => {

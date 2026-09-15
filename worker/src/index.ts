@@ -421,19 +421,26 @@ async function handleAuthVerify(request: Request, env: Env): Promise<Response> {
     return new Response("Missing token", { status: 400 });
   }
   const tokenHash = await sha256Hex(token);
-
-  const linkRow = await env.DB.prepare(
-    `SELECT email, expires_at, used FROM magic_links WHERE token = ?`
-  )
-    .bind(tokenHash)
-    .first<{ email: string; expires_at: number; used: number }>();
-
   const now = Math.floor(Date.now() / 1000);
-  if (!linkRow || linkRow.used || linkRow.expires_at < now) {
+
+  // Atomically consume the link: the UPDATE's WHERE clause re-checks
+  // used = 0 and expiry at the same time it flips used to 1, so two
+  // near-simultaneous requests for the same token can't both read
+  // "not used yet" before either write lands — SQLite/D1 serializes
+  // writes to a row, so at most one of these statements can match and
+  // return a row. RETURNING lets us get the email back from the same
+  // atomic statement instead of a separate SELECT beforehand.
+  const linkRow = await env.DB.prepare(
+    `UPDATE magic_links SET used = 1
+     WHERE token = ? AND used = 0 AND expires_at > ?
+     RETURNING email`
+  )
+    .bind(tokenHash, now)
+    .first<{ email: string }>();
+
+  if (!linkRow) {
     return new Response("Invalid or expired link", { status: 400 });
   }
-
-  await env.DB.prepare(`UPDATE magic_links SET used = 1 WHERE token = ?`).bind(tokenHash).run();
 
   let user = await env.DB.prepare(`SELECT id FROM users WHERE email = ?`)
     .bind(linkRow.email)
@@ -565,21 +572,24 @@ async function handleVerifyEmail(request: Request, env: Env): Promise<Response> 
     return new Response("Missing token", { status: 400 });
   }
   const tokenHash = await sha256Hex(token);
-
-  const row = await env.DB.prepare(
-    `SELECT user_id, expires_at, used FROM email_verifications WHERE token = ?`
-  )
-    .bind(tokenHash)
-    .first<{ user_id: string; expires_at: number; used: number }>();
-
   const now = Math.floor(Date.now() / 1000);
-  if (!row || row.used || row.expires_at < now) {
+
+  // Same atomic-consumption pattern as magic links (see handleAuthVerify):
+  // the WHERE clause on the UPDATE re-checks used = 0 / expiry at write
+  // time, so two concurrent requests replaying the same verification
+  // link can't both succeed.
+  const row = await env.DB.prepare(
+    `UPDATE email_verifications SET used = 1
+     WHERE token = ? AND used = 0 AND expires_at > ?
+     RETURNING user_id`
+  )
+    .bind(tokenHash, now)
+    .first<{ user_id: string }>();
+
+  if (!row) {
     return new Response("Invalid or expired link", { status: 400 });
   }
 
-  await env.DB.prepare(`UPDATE email_verifications SET used = 1 WHERE token = ?`)
-    .bind(tokenHash)
-    .run();
   await env.DB.prepare(`UPDATE users SET email_verified = 1 WHERE id = ?`)
     .bind(row.user_id)
     .run();
