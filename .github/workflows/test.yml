@@ -41,11 +41,6 @@ jobs:
 
   cli-macos:
     name: CLI (Go, macOS)
-    # Some cli tests only exercise real behavior on macOS (they shell out
-    # to /usr/libexec/PlistBuddy, which doesn't exist on Linux) — they
-    # self-skip there instead of failing, so this job is what actually
-    # proves that code path works. macos-latest runners are included free
-    # on GitHub-hosted runners for public repos; no separate Mac needed.
     runs-on: macos-latest
     defaults:
       run:
@@ -57,10 +52,4 @@ jobs:
           go-version-file: cli/go.mod
           cache: false
       - run: go build ./...
-      # -linkmode=external: Go's internal linker on macOS currently omits
-      # the LC_UUID load command on this Go version, which newer macOS
-      # dyld outright refuses to run ("missing LC_UUID load command",
-      # golang/go#68678 — fixed upstream for newer Go versions/internal
-      # linker, but forcing the external linker sidesteps it regardless of
-      # Go version, using Xcode's own linker (preinstalled on this image).
       - run: go test -ldflags="-linkmode=external" ./... -v
