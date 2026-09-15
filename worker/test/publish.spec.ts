@@ -245,6 +245,62 @@ describe("publish flow", () => {
     expect(xml).toContain('sparkle:edSignature="fake-signature-b64"');
   });
 
+  it("does not let release_notes containing ]]> break out of the CDATA block", async () => {
+    const { token, appId } = await seedUserAppAndToken();
+
+    const {
+      res: uploadRes,
+      file_key,
+      file_size,
+      sha256,
+    } = await uploadBuild(token, appId, "MyApp-1.0.2.zip", "fake build bytes 2");
+    expect(uploadRes.status).toBe(200);
+
+    // A malicious/careless note containing the literal CDATA terminator,
+    // followed by markup that would be live XML if the terminator closed
+    // the section early.
+    const maliciousNotes =
+      'Fixed a bug]]><item><title>Injected</title><enclosure url="evil"/></item><description><![CDATA[ and improved performance';
+
+    const versionRes = await SELF.fetch(`https://railcast.test/${appId}/versions`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+      body: JSON.stringify({
+        version: "1.0.2",
+        build_number: 1,
+        file_key,
+        file_size,
+        sha256,
+        signature: "fake-signature-b64",
+        release_notes: maliciousNotes,
+      }),
+    });
+    expect(versionRes.status).toBe(201);
+
+    const appcastRes = await SELF.fetch(`https://railcast.test/${appId}/appcast.xml`);
+    expect(appcastRes.status).toBe(200);
+    const xml = await appcastRes.text();
+
+    // The injected <item>/<enclosure> markup must never appear as live XML
+    // outside of the CDATA text — i.e. there should be exactly one <item>
+    // for this version, not two.
+    const itemCount = (xml.match(/<item>/g) ?? []).length;
+    expect(itemCount).toBe(1);
+    expect(xml).not.toContain('<enclosure url="evil"/>');
+
+    // The full original text should still be recoverable from inside the
+    // (possibly split) CDATA section(s).
+    expect(xml).toContain("Fixed a bug");
+    expect(xml).toContain("and improved performance");
+
+    // And the CDATA nesting must be balanced: every opening marker has a
+    // matching close, so the split-CDATA escaping didn't leave a dangling
+    // "<![CDATA[" or an extra "]]>" that would make the document malformed.
+    const opens = (xml.match(/<!\[CDATA\[/g) ?? []).length;
+    const closes = (xml.match(/]]>/g) ?? []).length;
+    expect(opens).toBe(closes);
+  });
+
   it("rejects registering a version whose claimed sha256 doesn't match the verified upload", async () => {
     const { token, appId } = await seedUserAppAndToken();
     const { file_key, file_size } = await uploadBuild(

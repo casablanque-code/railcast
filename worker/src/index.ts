@@ -27,6 +27,21 @@ function escapeXml(s: string): string {
     .replace(/"/g, "&quot;");
 }
 
+// CDATA has no escape mechanism of its own — the only character sequence
+// that's actually illegal inside <![CDATA[ ... ]]> is the closing marker
+// "]]>" itself. If release_notes contains that sequence verbatim, it would
+// prematurely terminate the CDATA block and let the rest of the string be
+// parsed as XML markup, corrupting (or injecting into) the appcast.
+//
+// The standard fix is to split any embedded "]]>" across two adjacent
+// CDATA sections: "]]>" becomes "]]" + "]]><![CDATA[" + ">", i.e.
+// "]]]]><![CDATA[>". Concatenated, adjacent CDATA sections are equivalent
+// to one continuous block from the XML parser's point of view, so this is
+// lossless — the exact original bytes come back out on the other side.
+function safeCData(s: string): string {
+  return s.replace(/]]>/g, "]]]]><![CDATA[>");
+}
+
 function formatRfc2822(unixSeconds: number): string {
   // Date#toUTCString() ends in "GMT", which validators reject — RFC 2822
   // wants a numeric zone offset.
@@ -44,7 +59,7 @@ function renderAppcast(
       const pubDate = formatRfc2822(r.created_at);
       const downloadUrl = `${fileBaseUrl}/${r.file_key}`;
       const description = r.release_notes
-        ? `\n      <description><![CDATA[${r.release_notes}]]></description>`
+        ? `\n      <description><![CDATA[${safeCData(r.release_notes)}]]></description>`
         : "";
       const critical = r.critical ? `\n      <sparkle:criticalUpdate/>` : "";
       const phasedRollout =
