@@ -57,4 +57,10 @@ jobs:
           go-version-file: cli/go.mod
           cache: false
       - run: go build ./...
-      - run: go test ./... -v
+      # -linkmode=external: Go's internal linker on macOS currently omits
+      # the LC_UUID load command on this Go version, which newer macOS
+      # dyld outright refuses to run ("missing LC_UUID load command",
+      # golang/go#68678 — fixed upstream for newer Go versions/internal
+      # linker, but forcing the external linker sidesteps it regardless of
+      # Go version, using Xcode's own linker (preinstalled on this image).
+      - run: go test -ldflags="-linkmode=external" ./... -v
