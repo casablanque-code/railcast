@@ -28,12 +28,54 @@ func TestDoCreateApp_Success(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	app, err := doCreateApp(srv.URL, "test-token", "myapp", "pubkey123")
+	app, err := doCreateApp(srv.URL, "test-token", "myapp", "pubkey123", 0)
 	if err != nil {
 		t.Fatalf("doCreateApp returned an error: %v", err)
 	}
 	if app.ID != "aZ3kQ9mN2pRt" || app.SigningPublicKey != "pubkey123" {
 		t.Fatalf("unexpected response: %+v", app)
+	}
+}
+
+func TestDoCreateApp_WithInitialBuild(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]interface{}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("failed to decode request body: %v", err)
+		}
+		got, ok := body["initial_build_number"]
+		if !ok {
+			t.Fatalf("expected initial_build_number in request body, got: %+v", body)
+		}
+		if got != float64(999) {
+			t.Fatalf("unexpected initial_build_number: %v", got)
+		}
+		w.WriteHeader(http.StatusCreated)
+		json.NewEncoder(w).Encode(createAppResponse{ID: "aZ3kQ9mN2pRt", Name: "myapp", SigningPublicKey: "pubkey123"})
+	}))
+	defer srv.Close()
+
+	if _, err := doCreateApp(srv.URL, "test-token", "myapp", "pubkey123", 999); err != nil {
+		t.Fatalf("doCreateApp returned an error: %v", err)
+	}
+}
+
+func TestDoCreateApp_OmitsInitialBuildWhenZero(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]interface{}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("failed to decode request body: %v", err)
+		}
+		if _, ok := body["initial_build_number"]; ok {
+			t.Fatalf("expected initial_build_number to be omitted, got: %+v", body)
+		}
+		w.WriteHeader(http.StatusCreated)
+		json.NewEncoder(w).Encode(createAppResponse{ID: "aZ3kQ9mN2pRt", Name: "myapp", SigningPublicKey: "pubkey123"})
+	}))
+	defer srv.Close()
+
+	if _, err := doCreateApp(srv.URL, "test-token", "myapp", "pubkey123", 0); err != nil {
+		t.Fatalf("doCreateApp returned an error: %v", err)
 	}
 }
 
@@ -44,7 +86,7 @@ func TestDoCreateApp_UnexpectedStatus(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	_, err := doCreateApp(srv.URL, "test-token", "myapp", "pubkey123")
+	_, err := doCreateApp(srv.URL, "test-token", "myapp", "pubkey123", 0)
 	if err == nil {
 		t.Fatal("expected an error for a 500 response, got nil")
 	}
@@ -63,7 +105,7 @@ func TestDoCreateApp_402IsNotSpecialCased(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	_, err := doCreateApp(srv.URL, "test-token", "myapp", "pubkey123")
+	_, err := doCreateApp(srv.URL, "test-token", "myapp", "pubkey123", 0)
 	if err == nil {
 		t.Fatal("expected an error for a 402 response, got nil")
 	}
