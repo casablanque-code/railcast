@@ -260,7 +260,7 @@ describe("publish flow", () => {
     // followed by markup that would be live XML if the terminator closed
     // the section early.
     const maliciousNotes =
-      'Fixed a bug]]><item><title>Injected</title><enclosure url="evil"/></item><description><![CDATA[ and improved performance';
+      'Fixed a bug]]><item><title>Injected</title><enclosure url="evil"/></item> and improved performance';
 
     const versionRes = await SELF.fetch(`https://railcast.test/${appId}/versions`, {
       method: "POST",
@@ -281,21 +281,35 @@ describe("publish flow", () => {
     expect(appcastRes.status).toBe(200);
     const xml = await appcastRes.text();
 
-    // The injected <item>/<enclosure> markup must never appear as live XML
-    // outside of the CDATA text — i.e. there should be exactly one <item>
-    // for this version, not two.
-    const itemCount = (xml.match(/<item>/g) ?? []).length;
+    // Extract the <description> CDATA content. Because a real "]]>" inside
+    // the notes gets split into "]]" + "]]><![CDATA[" + ">", the *only*
+    // place "]]>" is immediately followed by "</description>" is the true,
+    // final close — any "]]>" from an embedded split is instead followed
+    // by "<![CDATA[". A non-greedy match up to the first "]]></description>"
+    // therefore captures the whole (possibly multi-segment) CDATA payload,
+    // split-markers included.
+    const descMatch = xml.match(/<description><!\[CDATA\[([\s\S]*?)]]><\/description>/);
+    expect(descMatch).not.toBeNull();
+
+    // Undo the split-escaping to recover what should be byte-for-byte the
+    // original notes text.
+    const recovered = descMatch![1].replace(/]]]]><!\[CDATA\[>/g, "]]>");
+    expect(recovered).toBe(maliciousNotes);
+
+    // Now check the *rest* of the document — with the description's CDATA
+    // blanked out — to make sure none of the injected markup escaped into
+    // real XML structure. This is the part that would fail without
+    // safeCData: without it, "]]>" in the notes closes the CDATA early and
+    // the injected <item>/<enclosure> become live sibling elements.
+    const xmlOutsideDescription = xml.replace(descMatch![0], "<description></description>");
+    const itemCount = (xmlOutsideDescription.match(/<item>/g) ?? []).length;
     expect(itemCount).toBe(1);
-    expect(xml).not.toContain('<enclosure url="evil"/>');
+    expect(xmlOutsideDescription).not.toContain('<enclosure url="evil"/>');
+    expect(xmlOutsideDescription).not.toContain("Injected");
 
-    // The full original text should still be recoverable from inside the
-    // (possibly split) CDATA section(s).
-    expect(xml).toContain("Fixed a bug");
-    expect(xml).toContain("and improved performance");
-
-    // And the CDATA nesting must be balanced: every opening marker has a
-    // matching close, so the split-CDATA escaping didn't leave a dangling
-    // "<![CDATA[" or an extra "]]>" that would make the document malformed.
+    // And the CDATA nesting in the full document must be balanced: every
+    // opening marker has a matching close, so the split-CDATA escaping
+    // didn't leave a dangling "<![CDATA[" or an extra "]]>".
     const opens = (xml.match(/<!\[CDATA\[/g) ?? []).length;
     const closes = (xml.match(/]]>/g) ?? []).length;
     expect(opens).toBe(closes);
