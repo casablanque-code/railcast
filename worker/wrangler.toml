@@ -41,3 +41,6 @@ bucket_name = "railcast-builds"
 
 [vars]
 PUBLIC_FILE_BASE_URL = "https://dl.railcast.casablanque.com"
+# Hard cap on a single build upload, in bytes. Falls back to 500 MiB in the
+# Worker if unset or unparsable — see DEFAULT_MAX_UPLOAD_BYTES in src/index.ts.
+MAX_UPLOAD_BYTES = "524288000"

@@ -207,6 +207,65 @@ describe("upload", () => {
     });
     expect(res.status).toBe(409);
   });
+
+  // MAX_UPLOAD_BYTES is set to 1024 in vitest.config.mts's test bindings,
+  // specifically so these tests can exercise the limit with small bodies.
+  it("413s an upload whose declared Content-Length exceeds the configured max", async () => {
+    const { token, appId } = await seedUserAppAndToken();
+    const body = "x".repeat(2000);
+    const res = await SELF.fetch(`https://railcast.test/${appId}/upload/toolarge.zip`, {
+      method: "PUT",
+      headers: { Authorization: `Bearer ${token}`, "X-Sha256": await sha256Hex(body) },
+      body,
+    });
+    expect(res.status).toBe(413);
+
+    // And nothing should have been written to R2 for it.
+    const head = await env.BUILDS.head(`${appId}/toolarge.zip`);
+    expect(head).toBeNull();
+  });
+
+  it("411s an upload with no Content-Length header at all", async () => {
+    const { token, appId } = await seedUserAppAndToken();
+    const chunk = "y".repeat(50);
+
+    // A streamed body with no Content-Length header. R2's put() only
+    // accepts a stream whose length it can determine up front (the
+    // original request/response body, or a FixedLengthStream) — wrapping
+    // or otherwise deriving the stream to count bytes ourselves breaks
+    // that property and put() throws for every upload, not just oversized
+    // ones. So a missing Content-Length is rejected outright rather than
+    // silently falling back to some other size-tracking mechanism.
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode(chunk));
+        controller.close();
+      },
+    });
+
+    const res = await SELF.fetch(`https://railcast.test/${appId}/upload/streamed-nolength.zip`, {
+      method: "PUT",
+      headers: { Authorization: `Bearer ${token}`, "X-Sha256": await sha256Hex(chunk) },
+      // @ts-expect-error - duplex is required by undici for streaming bodies
+      duplex: "half",
+      body: stream,
+    });
+    expect(res.status).toBe(411);
+
+    const head = await env.BUILDS.head(`${appId}/streamed-nolength.zip`);
+    expect(head).toBeNull();
+  });
+
+  it("accepts an upload right at the configured max", async () => {
+    const { token, appId } = await seedUserAppAndToken();
+    const body = "z".repeat(1024);
+    const res = await SELF.fetch(`https://railcast.test/${appId}/upload/atlimit.zip`, {
+      method: "PUT",
+      headers: { Authorization: `Bearer ${token}`, "X-Sha256": await sha256Hex(body) },
+      body,
+    });
+    expect(res.status).toBe(200);
+  });
 });
 
 describe("publish flow", () => {
@@ -341,6 +400,39 @@ describe("publish flow", () => {
       }),
     });
     expect(res.status).toBe(400);
+  });
+
+  it("rejects registering a version whose claimed file_size doesn't match R2's actual stored size", async () => {
+    const { token, appId } = await seedUserAppAndToken();
+    const { file_key, sha256 } = await uploadBuild(
+      token,
+      appId,
+      "MyApp-1.0.1b.zip",
+      "fake build bytes"
+    );
+
+    const res = await SELF.fetch(`https://railcast.test/${appId}/versions`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+      body: JSON.stringify({
+        version: "1.0.1",
+        build_number: 1,
+        file_key,
+        // file_size is just a client-supplied number in the JSON body —
+        // nothing ties it to reality unless the server checks it against
+        // R2's own head.size, so claim something obviously wrong here.
+        file_size: 999999,
+        sha256,
+        signature: "fake-signature-b64",
+      }),
+    });
+    expect(res.status).toBe(400);
+
+    // And the bad value must not have slipped into the database either.
+    const row = await env.DB.prepare(`SELECT 1 FROM versions WHERE file_key = ?`)
+      .bind(file_key)
+      .first();
+    expect(row).toBeNull();
   });
 
   it("rejects registering a version with a malformed (non-64-hex) sha256", async () => {

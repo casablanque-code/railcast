@@ -4,6 +4,22 @@ export interface Env {
   ASSETS: Fetcher;
   PUBLIC_FILE_BASE_URL: string;
   RESEND_API_KEY: string;
+  // Optional; string because wrangler [vars] are always strings. Parsed
+  // with DEFAULT_MAX_UPLOAD_BYTES as the fallback — see maxUploadBytes().
+  MAX_UPLOAD_BYTES?: string;
+}
+
+// Fallback when MAX_UPLOAD_BYTES isn't configured. 500 MiB comfortably
+// covers a real desktop-app build artifact (installers, signed bundles)
+// without leaving uploads effectively unbounded, which — for a public
+// service where a valid API token is the only gate — is an abuse/cost
+// vector: R2 storage and class-A request costs scale with whatever
+// clients are willing to upload.
+const DEFAULT_MAX_UPLOAD_BYTES = 500 * 1024 * 1024;
+
+function maxUploadBytes(env: Env): number {
+  const parsed = Number(env.MAX_UPLOAD_BYTES);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULT_MAX_UPLOAD_BYTES;
 }
 
 interface VersionRow {
@@ -894,6 +910,31 @@ async function handleUpload(
     return new Response("Missing body", { status: 400 });
   }
 
+  const limit = maxUploadBytes(env);
+
+  // R2's put() only accepts a ReadableStream whose length it can determine
+  // up front — the original request/response body, or a FixedLengthStream.
+  // Anything derived from it via pipeThrough()/TransformStream loses that
+  // property and put() throws "Provided readable stream must have a known
+  // length" for every upload, not just oversized ones. So the limit has to
+  // be enforced around the stream, via Content-Length, rather than by
+  // wrapping the stream itself — request.body is passed to put() untouched
+  // below.
+  const contentLengthHeader = request.headers.get("Content-Length");
+  if (contentLengthHeader === null) {
+    return new Response("Content-Length header is required for uploads", { status: 411 });
+  }
+  const declaredLength = Number(contentLengthHeader);
+  if (!Number.isFinite(declaredLength) || declaredLength < 0) {
+    return new Response("Content-Length header is required for uploads", { status: 411 });
+  }
+  if (declaredLength > limit) {
+    return new Response(
+      `Upload too large: ${declaredLength} bytes exceeds the ${limit}-byte limit`,
+      { status: 413 }
+    );
+  }
+
   // Required so R2 verifies the bytes as they're written, not after the
   // fact — without this, handleCreateVersion below has nothing to check
   // the client-claimed sha256 against, since R2 only records a checksum
@@ -929,6 +970,21 @@ async function handleUpload(
   }
   if (!obj) {
     return new Response("Uploaded bytes don't match the X-Sha256 header", { status: 400 });
+  }
+
+  // Defense in depth: Content-Length is caller-supplied, and while the
+  // Workers runtime generally holds a request's body to the length it
+  // declared, we don't want a mismatched or lied-about header to be the
+  // only thing standing between a client and storing more than the limit.
+  // If the object that actually landed in R2 is bigger than allowed,
+  // remove it immediately rather than leaving an oversized object
+  // reachable by a later /versions call.
+  if (obj.size > limit) {
+    await env.BUILDS.delete(fileKey);
+    return new Response(
+      `Upload too large: stored object was ${obj.size} bytes, exceeding the ${limit}-byte limit`,
+      { status: 413 }
+    );
   }
 
   return new Response(JSON.stringify({ file_key: fileKey, file_size: obj?.size ?? null }), {
@@ -1021,6 +1077,20 @@ async function handleCreateVersion(request: Request, env: Env, appId: string): P
     return new Response("sha256 does not match the uploaded file's verified checksum", {
       status: 400,
     });
+  }
+
+  // file_size is just a number the client puts in the JSON body — nothing
+  // upstream of this ties it to the bytes actually in R2 (unlike sha256,
+  // which we just checked against R2's own verified checksum above). A
+  // wrong or malicious file_size would flow straight into the appcast's
+  // <enclosure length="..."> attribute, which Sparkle-family updaters use
+  // for content-length validation and progress display — so anchor it to
+  // what R2 actually stored instead of trusting the client's claim.
+  if (file_size !== head.size) {
+    return new Response(
+      `file_size (${file_size}) does not match the uploaded file's actual size in storage (${head.size})`,
+      { status: 400 }
+    );
   }
 
   // Sparkle (and most updaters) trust build_number as a strictly increasing
