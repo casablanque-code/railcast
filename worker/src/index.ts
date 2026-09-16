@@ -879,6 +879,11 @@ async function handleApiDeleteApp(request: Request, env: Env, appId: string): Pr
   // foreign keys by default anyway, so do it explicitly and in the safe
   // order regardless).
   await env.DB.prepare(`DELETE FROM versions WHERE app_id = ?`).bind(appId).run();
+  // A token scoped to this app (app_id = appId) would otherwise violate
+  // api_tokens.app_id's foreign key on apps(id) once the app row below is
+  // gone — and such a token would be useless afterward anyway, since every
+  // ownership check 404s on a nonexistent app_id.
+  await env.DB.prepare(`DELETE FROM api_tokens WHERE app_id = ?`).bind(appId).run();
   await env.DB.prepare(`DELETE FROM apps WHERE id = ?`).bind(appId).run();
 
   // Best-effort cleanup of the uploaded build artifacts in R2. Not
