@@ -24,6 +24,43 @@ async function seedUserAppAndToken(appId = "myapp-" + crypto.randomUUID()) {
   return { userId, token, appId };
 }
 
+// Adds a second app to an existing user, for scoping tests that need two
+// apps under the same account.
+async function seedSecondApp(userId: string, appId = "myapp-" + crypto.randomUUID()) {
+  const now = Math.floor(Date.now() / 1000);
+  await env.DB.prepare(
+    `INSERT INTO apps (id, owner_email, owner_user_id, signing_public_key, name, created_at) VALUES (?, ?, ?, ?, ?, ?)`
+  )
+    .bind(appId, `${crypto.randomUUID()}@example.com`, userId, "fake-public-key", "Second App", now)
+    .run();
+  return appId;
+}
+
+// A token scoped to a single app_id, as created via handleApiCreateToken
+// when app_id is passed — inserted directly here so scoping tests don't
+// need to also exercise the dashboard session flow.
+async function seedScopedToken(userId: string, appId: string) {
+  const token = "test-scoped-token-" + crypto.randomUUID();
+  const now = Math.floor(Date.now() / 1000);
+  await env.DB.prepare(
+    `INSERT INTO api_tokens (token, user_id, app_id, created_at) VALUES (?, ?, ?, ?)`
+  )
+    .bind(await sha256Hex(token), userId, appId, now)
+    .run();
+  return token;
+}
+
+async function seedSession(userId: string) {
+  const sessionId = "session-" + crypto.randomUUID();
+  const now = Math.floor(Date.now() / 1000);
+  await env.DB.prepare(
+    `INSERT INTO sessions (id, user_id, expires_at, created_at) VALUES (?, ?, ?, ?)`
+  )
+    .bind(await sha256Hex(sessionId), userId, now + 3600, now)
+    .run();
+  return `session=${sessionId}`;
+}
+
 // Uploads bytes the way the real CLI does: computes the real sha256
 // client-side and sends it via X-Sha256, which the server now hands to R2
 // to verify as the bytes stream in. Tests that need a working upload
@@ -736,5 +773,178 @@ describe("DELETE /api/apps/:id", () => {
     const { appId } = await seedUserAppAndToken();
     const res = await SELF.fetch(`https://railcast.test/api/apps/${appId}`, { method: "DELETE" });
     expect(res.status).toBe(401);
+  });
+});
+
+describe("per-app token scoping", () => {
+  it("an account-wide (unscoped) token still works against every app the account owns", async () => {
+    // Regression check for backward compatibility: tokens created before
+    // this feature existed have app_id = NULL and must keep working
+    // exactly as before across all of an account's apps.
+    const { token, appId: appA, userId } = await seedUserAppAndToken();
+    const appB = await seedSecondApp(userId);
+
+    const uploadA = await uploadBuild(token, appA, "MyApp-1.0.0.zip", "bytes for A");
+    expect(uploadA.res.status).toBe(200);
+    const uploadB = await uploadBuild(token, appB, "MyApp-1.0.0.zip", "bytes for B");
+    expect(uploadB.res.status).toBe(200);
+  });
+
+  it("a token scoped to app A works for app A but is forbidden on app B, even though the same account owns both", async () => {
+    const { appId: appA, userId } = await seedUserAppAndToken();
+    const appB = await seedSecondApp(userId);
+    const scopedToken = await seedScopedToken(userId, appA);
+
+    const uploadA = await uploadBuild(scopedToken, appA, "MyApp-1.0.0.zip", "bytes for A");
+    expect(uploadA.res.status).toBe(200);
+
+    const uploadB = await SELF.fetch(`https://railcast.test/${appB}/upload/MyApp-1.0.0.zip`, {
+      method: "PUT",
+      headers: { Authorization: `Bearer ${scopedToken}`, "X-Sha256": await sha256Hex("x") },
+      body: "x",
+    });
+    expect(uploadB.status).toBe(403);
+
+    // Nothing should have been written to app B's prefix in R2.
+    const head = await env.BUILDS.head(`${appB}/MyApp-1.0.0.zip`);
+    expect(head).toBeNull();
+  });
+
+  it("a scoped token is also forbidden from registering a version on a different app", async () => {
+    const { appId: appA, userId } = await seedUserAppAndToken();
+    const appB = await seedSecondApp(userId);
+    const scopedToken = await seedScopedToken(userId, appA);
+
+    // Upload to B with an account-wide-equivalent path isn't possible for
+    // the scoped token (upload itself is already forbidden, tested above),
+    // but /versions must independently enforce the same scoping rather
+    // than relying only on the upload step having blocked it.
+    const res = await SELF.fetch(`https://railcast.test/${appB}/versions`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${scopedToken}`, "Content-Type": "application/json" },
+      body: JSON.stringify({
+        version: "1.0.0",
+        build_number: 1,
+        file_key: `${appB}/whatever.zip`,
+        file_size: 1,
+        sha256: "0".repeat(64),
+        signature: "sig",
+      }),
+    });
+    expect(res.status).toBe(403);
+  });
+
+  it("a scoped token can delete the app it's scoped to, but not a different app the account owns", async () => {
+    const { appId: appA, userId } = await seedUserAppAndToken();
+    const appB = await seedSecondApp(userId);
+    const scopedToken = await seedScopedToken(userId, appA);
+
+    const delB = await SELF.fetch(`https://railcast.test/api/apps/${appB}`, {
+      method: "DELETE",
+      headers: { Authorization: `Bearer ${scopedToken}` },
+    });
+    expect(delB.status).toBe(403);
+
+    const delA = await SELF.fetch(`https://railcast.test/api/apps/${appA}`, {
+      method: "DELETE",
+      headers: { Authorization: `Bearer ${scopedToken}` },
+    });
+    expect(delA.status).toBe(204);
+  });
+
+  it("a scoped token cannot be used to create a brand-new app", async () => {
+    const { appId: appA, userId } = await seedUserAppAndToken();
+    const scopedToken = await seedScopedToken(userId, appA);
+
+    const res = await SELF.fetch("https://railcast.test/api/apps", {
+      method: "POST",
+      headers: { Authorization: `Bearer ${scopedToken}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ name: "Sneaky New App", signing_public_key: "fake-key" }),
+    });
+    expect(res.status).toBe(403);
+  });
+
+  it("an account-wide token can still create a new app", async () => {
+    const { token } = await seedUserAppAndToken();
+
+    const res = await SELF.fetch("https://railcast.test/api/apps", {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ name: "New App", signing_public_key: "fake-key" }),
+    });
+    expect(res.status).toBe(201);
+  });
+});
+
+describe("POST /api/tokens", () => {
+  it("creates an account-wide token when app_id is omitted", async () => {
+    const { userId } = await seedUserAppAndToken();
+    const cookie = await seedSession(userId);
+
+    const res = await SELF.fetch("https://railcast.test/api/tokens", {
+      method: "POST",
+      headers: { Cookie: cookie },
+    });
+    expect(res.status).toBe(201);
+    const body = await res.json<{ id: string; token: string; app_id: string | null }>();
+    expect(body.app_id).toBeNull();
+
+    const row = await env.DB.prepare(`SELECT app_id FROM api_tokens WHERE id = ?`)
+      .bind(body.id)
+      .first<{ app_id: string | null }>();
+    expect(row?.app_id).toBeNull();
+  });
+
+  it("creates a per-app token when app_id names an app the user owns", async () => {
+    const { appId, userId } = await seedUserAppAndToken();
+    const cookie = await seedSession(userId);
+
+    const res = await SELF.fetch("https://railcast.test/api/tokens", {
+      method: "POST",
+      headers: { Cookie: cookie, "Content-Type": "application/json" },
+      body: JSON.stringify({ app_id: appId }),
+    });
+    expect(res.status).toBe(201);
+    const body = await res.json<{ id: string; token: string; app_id: string | null }>();
+    expect(body.app_id).toBe(appId);
+
+    // And the resulting token is actually scoped: it should work for this
+    // app and be rejected for another app under the same account.
+    const otherApp = await seedSecondApp(userId);
+    const uploadOwn = await uploadBuild(body.token, appId, "MyApp-1.0.0.zip", "bytes");
+    expect(uploadOwn.res.status).toBe(200);
+
+    const uploadOther = await SELF.fetch(
+      `https://railcast.test/${otherApp}/upload/MyApp-1.0.0.zip`,
+      {
+        method: "PUT",
+        headers: { Authorization: `Bearer ${body.token}`, "X-Sha256": await sha256Hex("x") },
+        body: "x",
+      }
+    );
+    expect(uploadOther.status).toBe(403);
+  });
+
+  it("404s creating a token scoped to an app_id the user doesn't own", async () => {
+    const owner = await seedUserAppAndToken();
+    const attackerId = crypto.randomUUID();
+    const now = Math.floor(Date.now() / 1000);
+    await env.DB.prepare(`INSERT INTO users (id, email, created_at) VALUES (?, ?, ?)`)
+      .bind(attackerId, `${crypto.randomUUID()}@example.com`, now)
+      .run();
+    const attackerCookie = await seedSession(attackerId);
+
+    const res = await SELF.fetch("https://railcast.test/api/tokens", {
+      method: "POST",
+      headers: { Cookie: attackerCookie, "Content-Type": "application/json" },
+      body: JSON.stringify({ app_id: owner.appId }),
+    });
+    expect(res.status).toBe(404);
+
+    // And no token should have been created at all as a side effect.
+    const count = await env.DB.prepare(`SELECT COUNT(*) as c FROM api_tokens WHERE user_id = ?`)
+      .bind(attackerId)
+      .first<{ c: number }>();
+    expect(count?.c).toBe(0);
   });
 });

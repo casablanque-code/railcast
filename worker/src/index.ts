@@ -270,54 +270,38 @@ async function getSessionUser(
   return row ?? null;
 }
 
-// For endpoints the CLI calls directly with an API token (no browser
-// session available) — resolves the same way /:appId/upload and
-// /:appId/versions already do.
-async function getUserFromBearerToken(
-  request: Request,
-  env: Env
-): Promise<{ id: string; email: string } | null> {
+interface BearerIdentity {
+  userId: string;
+  email: string;
+  // The app this token is scoped to, or null for an old-style,
+  // account-wide token (see migration 0009_per_app_tokens.sql).
+  appId: string | null;
+}
+
+async function getBearerIdentity(request: Request, env: Env): Promise<BearerIdentity | null> {
   const authHeader = request.headers.get("Authorization") ?? "";
   const token = authHeader.replace("Bearer ", "");
   if (!token) return null;
   const tokenHash = await sha256Hex(token);
 
   const row = await env.DB.prepare(
-    `SELECT users.id as id, users.email as email
+    `SELECT users.id as id, users.email as email, api_tokens.app_id as app_id
      FROM api_tokens
      JOIN users ON users.id = api_tokens.user_id
      WHERE api_tokens.token = ?`
   )
     .bind(tokenHash)
-    .first<{ id: string; email: string }>();
+    .first<{ id: string; email: string; app_id: string | null }>();
 
-  return row ?? null;
+  if (!row) return null;
+  return { userId: row.id, email: row.email, appId: row.app_id };
 }
 
-// Session cookie (dashboard) OR bearer token (CLI) — either identifies the user.
-async function getAuthenticatedUser(
-  request: Request,
-  env: Env
-): Promise<{ id: string; email: string } | null> {
-  const sessionUser = await getSessionUser(request, env);
-  if (sessionUser) return sessionUser;
-  return getUserFromBearerToken(request, env);
-}
-
-// Resolves a bearer token straight to a user id, for the upload/versions
-// routes which never go through a browser session.
-async function getUserIdFromBearerToken(request: Request, env: Env): Promise<string | null> {
-  const authHeader = request.headers.get("Authorization") ?? "";
-  const token = authHeader.replace("Bearer ", "");
-  if (!token) return null;
-  const tokenHash = await sha256Hex(token);
-
-  const row = await env.DB.prepare(`SELECT user_id FROM api_tokens WHERE token = ?`)
-    .bind(tokenHash)
-    .first<{ user_id: string }>();
-
-  return row?.user_id ?? null;
-}
+// Note: there is no combined "session or bearer" helper anymore — the two
+// call sites that used to share one (handleApiCreateApp, handleApiDeleteApp)
+// need to see whether a bearer token is per-app scoped, so they resolve
+// session vs. bearer identity themselves instead of going through a helper
+// that discards that distinction.
 
 async function sendTransactionalEmail(
   env: Env,
@@ -711,8 +695,20 @@ async function handleApiListApps(request: Request, env: Env): Promise<Response> 
 }
 
 async function handleApiCreateApp(request: Request, env: Env): Promise<Response> {
-  const user = await getAuthenticatedUser(request, env);
+  const sessionUser = await getSessionUser(request, env);
+  const identity = sessionUser ? null : await getBearerIdentity(request, env);
+  const user = sessionUser ?? (identity ? { id: identity.userId, email: identity.email } : null);
   if (!user) return jsonResponse({ error: "unauthorized" }, 401);
+
+  // A per-app token is scoped to the one app it was created for — using it
+  // to mint a brand-new app would be a way around that scoping entirely,
+  // so this is session-or-account-wide-token only.
+  if (identity && identity.appId !== null) {
+    return jsonResponse(
+      { error: "forbidden", message: "This token is scoped to a single app and can't create new apps" },
+      403
+    );
+  }
 
   if (!hasValidOrigin(request, new URL(request.url).origin)) {
     return jsonResponse({ error: "bad_origin" }, 403);
@@ -766,10 +762,10 @@ async function handleApiListTokens(request: Request, env: Env): Promise<Response
   if (!user) return jsonResponse({ error: "unauthorized" }, 401);
 
   const { results } = await env.DB.prepare(
-    `SELECT id, preview, created_at FROM api_tokens WHERE user_id = ? ORDER BY created_at DESC`
+    `SELECT id, preview, app_id, created_at FROM api_tokens WHERE user_id = ? ORDER BY created_at DESC`
   )
     .bind(user.id)
-    .all<{ id: string; preview: string; created_at: number }>();
+    .all<{ id: string; preview: string; app_id: string | null; created_at: number }>();
 
   return jsonResponse({ tokens: results ?? [] });
 }
@@ -782,19 +778,47 @@ async function handleApiCreateToken(request: Request, env: Env): Promise<Respons
     return jsonResponse({ error: "bad_origin" }, 403);
   }
 
+  let body: { app_id?: string } = {};
+  try {
+    // Body is optional — an empty body (or app_id omitted from it) keeps
+    // creating the old-style account-wide token, same as before this
+    // feature existed. Read as text first so an empty body (which isn't
+    // valid JSON on its own) doesn't get treated as a parse error.
+    const raw = await request.text();
+    if (raw.trim().length > 0) {
+      body = JSON.parse(raw);
+    }
+  } catch {
+    return jsonResponse({ error: "invalid_json" }, 400);
+  }
+
+  const appId = body.app_id?.trim() || null;
+  if (appId !== null) {
+    // Scoping a token to an app you don't own would let you hand someone
+    // else's app_id to a token that's otherwise indistinguishable from a
+    // legitimate scoped one — reject up front rather than creating a
+    // token that can never actually authorize anything.
+    const appRow = await env.DB.prepare(`SELECT owner_user_id FROM apps WHERE id = ?`)
+      .bind(appId)
+      .first<{ owner_user_id: string }>();
+    if (!appRow || appRow.owner_user_id !== user.id) {
+      return jsonResponse({ error: "not_found", message: "No such app" }, 404);
+    }
+  }
+
   const id = crypto.randomUUID();
   const token = randomToken();
   const tokenHash = await sha256Hex(token);
   const preview = `${token.slice(0, 8)}…`;
   await env.DB.prepare(
-    `INSERT INTO api_tokens (id, token, preview, user_id, created_at) VALUES (?, ?, ?, ?, unixepoch())`
+    `INSERT INTO api_tokens (id, token, preview, user_id, app_id, created_at) VALUES (?, ?, ?, ?, ?, unixepoch())`
   )
-    .bind(id, tokenHash, preview, user.id)
+    .bind(id, tokenHash, preview, user.id, appId)
     .run();
 
   // Shown once — the dashboard must display and copy it immediately, we
   // only ever stored the hash so we genuinely cannot show it again.
-  return jsonResponse({ id, token }, 201);
+  return jsonResponse({ id, token, app_id: appId }, 201);
 }
 
 async function handleApiDeleteToken(
@@ -820,8 +844,10 @@ async function handleApiDeleteToken(
 }
 
 async function handleApiDeleteApp(request: Request, env: Env, appId: string): Promise<Response> {
-  const user = await getAuthenticatedUser(request, env);
-  if (!user) return jsonResponse({ error: "unauthorized" }, 401);
+  const sessionUser = await getSessionUser(request, env);
+  const identity = sessionUser ? null : await getBearerIdentity(request, env);
+  const userId = sessionUser?.id ?? identity?.userId;
+  if (!userId) return jsonResponse({ error: "unauthorized" }, 401);
 
   if (!hasValidOrigin(request, new URL(request.url).origin)) {
     return jsonResponse({ error: "bad_origin" }, 403);
@@ -838,8 +864,15 @@ async function handleApiDeleteApp(request: Request, env: Env, appId: string): Pr
     // CLI's upload/versions endpoints already give for a bad id.
     return jsonResponse({ error: "not_found" }, 404);
   }
-  if (appRow.owner_user_id !== user.id) {
+  if (appRow.owner_user_id !== userId) {
     return jsonResponse({ error: "forbidden" }, 403);
+  }
+  // Same per-app scoping as requireAppOwnership: a token scoped to one app
+  // (identity.appId set) must not be able to delete a *different* app the
+  // account happens to also own. Deleting the one app it's scoped to is
+  // fine — that's within the token's stated scope.
+  if (identity && identity.appId !== null && identity.appId !== appId) {
+    return jsonResponse({ error: "forbidden", message: "This token is scoped to a different app" }, 403);
   }
 
   // Versions first (no ON DELETE CASCADE on this FK — D1 doesn't enforce
@@ -871,8 +904,8 @@ async function requireAppOwnership(
   env: Env,
   appId: string
 ): Promise<{ ok: true } | { ok: false; response: Response }> {
-  const userId = await getUserIdFromBearerToken(request, env);
-  if (!userId) {
+  const identity = await getBearerIdentity(request, env);
+  if (!identity) {
     return { ok: false, response: new Response("Unauthorized", { status: 401 }) };
   }
 
@@ -890,8 +923,19 @@ async function requireAppOwnership(
     // differs for a hit vs a miss.
     return { ok: false, response: new Response("App not found", { status: 404 }) };
   }
-  if (appRow.owner_user_id !== userId) {
+  if (appRow.owner_user_id !== identity.userId) {
     return { ok: false, response: new Response("Forbidden", { status: 403 }) };
+  }
+  // A per-app token (appId set at creation — see handleApiCreateToken)
+  // must not be usable against any other app, even one the same account
+  // owns. This is the whole point of scoping: a leaked token only ever
+  // exposes the one app it was issued for. NULL means an old-style,
+  // account-wide token, kept working for backward compatibility.
+  if (identity.appId !== null && identity.appId !== appId) {
+    return {
+      ok: false,
+      response: new Response("This token is scoped to a different app", { status: 403 }),
+    };
   }
 
   return { ok: true };
