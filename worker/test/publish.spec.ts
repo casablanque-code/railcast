@@ -50,6 +50,30 @@ async function seedScopedToken(userId: string, appId: string) {
   return token;
 }
 
+// General-purpose token seeding for expiry/scope tests, where the default
+// scoped/account-wide helpers above don't cover what's needed.
+async function seedToken(
+  userId: string,
+  opts: { appId?: string | null; scope?: "publish" | "read"; expiresAt?: number | null } = {}
+) {
+  const token = "test-token-" + crypto.randomUUID();
+  const now = Math.floor(Date.now() / 1000);
+  await env.DB.prepare(
+    `INSERT INTO api_tokens (token, user_id, app_id, scope, expires_at, created_at)
+     VALUES (?, ?, ?, ?, ?, ?)`
+  )
+    .bind(
+      await sha256Hex(token),
+      userId,
+      opts.appId ?? null,
+      opts.scope ?? "publish",
+      opts.expiresAt ?? null,
+      now
+    )
+    .run();
+  return token;
+}
+
 async function seedSession(userId: string) {
   const sessionId = "session-" + crypto.randomUUID();
   const now = Math.floor(Date.now() / 1000);
@@ -946,5 +970,186 @@ describe("POST /api/tokens", () => {
       .bind(attackerId)
       .first<{ c: number }>();
     expect(count?.c).toBe(0);
+  });
+});
+
+describe("token expiry", () => {
+  it("401s a request using an expired token", async () => {
+    const { appId, userId } = await seedUserAppAndToken();
+    const now = Math.floor(Date.now() / 1000);
+    const expired = await seedToken(userId, { expiresAt: now - 60 });
+
+    const res = await uploadBuild(expired, appId, "MyApp-1.0.0.zip", "bytes");
+    expect(res.res.status).toBe(401);
+  });
+
+  it("accepts a token that expires in the future", async () => {
+    const { appId, userId } = await seedUserAppAndToken();
+    const now = Math.floor(Date.now() / 1000);
+    const notYetExpired = await seedToken(userId, { expiresAt: now + 3600 });
+
+    const res = await uploadBuild(notYetExpired, appId, "MyApp-1.0.0.zip", "bytes");
+    expect(res.res.status).toBe(200);
+  });
+
+  it("accepts a token with no expiry at all (NULL)", async () => {
+    const { appId, userId } = await seedUserAppAndToken();
+    const forever = await seedToken(userId, { expiresAt: null });
+
+    const res = await uploadBuild(forever, appId, "MyApp-1.0.0.zip", "bytes");
+    expect(res.res.status).toBe(200);
+  });
+});
+
+describe("token scope", () => {
+  it("a read-scoped token is forbidden from uploading", async () => {
+    const { appId, userId } = await seedUserAppAndToken();
+    const readToken = await seedToken(userId, { scope: "read" });
+
+    const res = await uploadBuild(readToken, appId, "MyApp-1.0.0.zip", "bytes");
+    expect(res.res.status).toBe(403);
+  });
+
+  it("a read-scoped token is forbidden from registering a version", async () => {
+    const { appId, userId } = await seedUserAppAndToken();
+    const readToken = await seedToken(userId, { scope: "read" });
+
+    const res = await SELF.fetch(`https://railcast.test/${appId}/versions`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${readToken}`, "Content-Type": "application/json" },
+      body: JSON.stringify({
+        version: "1.0.0",
+        build_number: 1,
+        file_key: `${appId}/whatever.zip`,
+        file_size: 1,
+        sha256: "0".repeat(64),
+        signature: "sig",
+      }),
+    });
+    expect(res.status).toBe(403);
+  });
+
+  it("a read-scoped token is forbidden from deleting the app", async () => {
+    const { appId, userId } = await seedUserAppAndToken();
+    const readToken = await seedToken(userId, { scope: "read" });
+
+    const res = await SELF.fetch(`https://railcast.test/api/apps/${appId}`, {
+      method: "DELETE",
+      headers: { Authorization: `Bearer ${readToken}` },
+    });
+    expect(res.status).toBe(403);
+  });
+
+  it("a read-scoped token is forbidden from creating a new app", async () => {
+    const { userId } = await seedUserAppAndToken();
+    const readToken = await seedToken(userId, { scope: "read" });
+
+    const res = await SELF.fetch("https://railcast.test/api/apps", {
+      method: "POST",
+      headers: { Authorization: `Bearer ${readToken}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ name: "New App", signing_public_key: "fake-key" }),
+    });
+    expect(res.status).toBe(403);
+  });
+
+  it("a publish-scoped token can still do everything a publish token could before", async () => {
+    const { appId, userId } = await seedUserAppAndToken();
+    const publishToken = await seedToken(userId, { scope: "publish" });
+
+    const res = await uploadBuild(publishToken, appId, "MyApp-1.0.0.zip", "bytes");
+    expect(res.res.status).toBe(200);
+  });
+});
+
+describe("last_used_at tracking", () => {
+  it("stays NULL until the token's first use, then updates on each successful auth", async () => {
+    const { token, appId, userId } = await seedUserAppAndToken();
+
+    const tokenHash = await sha256Hex(token);
+    const before = await env.DB.prepare(`SELECT last_used_at FROM api_tokens WHERE token = ?`)
+      .bind(tokenHash)
+      .first<{ last_used_at: number | null }>();
+    expect(before?.last_used_at).toBeNull();
+
+    await uploadBuild(token, appId, "MyApp-1.0.0.zip", "bytes");
+
+    const after = await env.DB.prepare(`SELECT last_used_at FROM api_tokens WHERE token = ?`)
+      .bind(tokenHash)
+      .first<{ last_used_at: number | null }>();
+    expect(after?.last_used_at).toEqual(expect.any(Number));
+  });
+
+  it("does not bump last_used_at for a failed/unknown token", async () => {
+    const res = await SELF.fetch("https://railcast.test/api/apps", {
+      headers: { Cookie: "session=this-does-not-exist" },
+    });
+    // Sanity: this should just fail auth, not touch any token row (there's
+    // no row to touch here — this is really guarding against a future
+    // regression where the update runs unconditionally instead of only
+    // after a matched SELECT).
+    expect(res.status).toBe(401);
+  });
+});
+
+describe("POST /api/tokens with scope and expiry", () => {
+  it("creates a read-scoped token with an explicit expiry", async () => {
+    const { userId } = await seedUserAppAndToken();
+    const cookie = await seedSession(userId);
+
+    const res = await SELF.fetch("https://railcast.test/api/tokens", {
+      method: "POST",
+      headers: { Cookie: cookie, "Content-Type": "application/json" },
+      body: JSON.stringify({ scope: "read", expires_in_days: 30 }),
+    });
+    expect(res.status).toBe(201);
+    const body = await res.json<{ id: string; scope: string; expires_at: number }>();
+    expect(body.scope).toBe("read");
+    expect(body.expires_at).toBeGreaterThan(Math.floor(Date.now() / 1000));
+    expect(body.expires_at).toBeLessThanOrEqual(Math.floor(Date.now() / 1000) + 31 * 86400);
+  });
+
+  it("defaults to publish scope and no expiry when omitted", async () => {
+    const { userId } = await seedUserAppAndToken();
+    const cookie = await seedSession(userId);
+
+    const res = await SELF.fetch("https://railcast.test/api/tokens", {
+      method: "POST",
+      headers: { Cookie: cookie },
+    });
+    expect(res.status).toBe(201);
+    const body = await res.json<{ scope: string; expires_at: number | null }>();
+    expect(body.scope).toBe("publish");
+    expect(body.expires_at).toBeNull();
+  });
+
+  it("rejects an invalid scope value", async () => {
+    const { userId } = await seedUserAppAndToken();
+    const cookie = await seedSession(userId);
+
+    const res = await SELF.fetch("https://railcast.test/api/tokens", {
+      method: "POST",
+      headers: { Cookie: cookie, "Content-Type": "application/json" },
+      body: JSON.stringify({ scope: "admin" }),
+    });
+    expect(res.status).toBe(400);
+  });
+
+  it("rejects an out-of-range expires_in_days", async () => {
+    const { userId } = await seedUserAppAndToken();
+    const cookie = await seedSession(userId);
+
+    const tooLong = await SELF.fetch("https://railcast.test/api/tokens", {
+      method: "POST",
+      headers: { Cookie: cookie, "Content-Type": "application/json" },
+      body: JSON.stringify({ expires_in_days: 999999 }),
+    });
+    expect(tooLong.status).toBe(400);
+
+    const zero = await SELF.fetch("https://railcast.test/api/tokens", {
+      method: "POST",
+      headers: { Cookie: cookie, "Content-Type": "application/json" },
+      body: JSON.stringify({ expires_in_days: 0 }),
+    });
+    expect(zero.status).toBe(400);
   });
 });

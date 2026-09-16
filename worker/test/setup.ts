@@ -27,7 +27,7 @@ const DDL = [
   `CREATE TABLE sessions (id TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id), expires_at INTEGER NOT NULL, created_at INTEGER NOT NULL);`,
   `CREATE TABLE magic_links (token TEXT PRIMARY KEY, email TEXT NOT NULL, expires_at INTEGER NOT NULL, used INTEGER NOT NULL DEFAULT 0);`,
   `CREATE TABLE email_verifications (token TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id), expires_at INTEGER NOT NULL, used INTEGER NOT NULL DEFAULT 0);`,
-  `CREATE TABLE api_tokens (token TEXT PRIMARY KEY, id TEXT, preview TEXT NOT NULL DEFAULT '', user_id TEXT NOT NULL REFERENCES users(id), app_id TEXT REFERENCES apps(id), created_at INTEGER NOT NULL);`,
+  `CREATE TABLE api_tokens (token TEXT PRIMARY KEY, id TEXT, preview TEXT NOT NULL DEFAULT '', user_id TEXT NOT NULL REFERENCES users(id), app_id TEXT REFERENCES apps(id), scope TEXT NOT NULL DEFAULT 'publish', expires_at INTEGER, last_used_at INTEGER, created_at INTEGER NOT NULL);`,
   `CREATE TABLE apps (id TEXT PRIMARY KEY, name TEXT NOT NULL DEFAULT '', owner_email TEXT NOT NULL, owner_user_id TEXT REFERENCES users(id), signing_public_key TEXT NOT NULL, beta_token TEXT, created_at INTEGER NOT NULL);`,
   `CREATE TABLE versions (id INTEGER PRIMARY KEY AUTOINCREMENT, app_id TEXT NOT NULL REFERENCES apps(id), channel TEXT NOT NULL DEFAULT 'stable', version TEXT NOT NULL, build_number INTEGER NOT NULL, file_key TEXT NOT NULL, file_size INTEGER NOT NULL, sha256 TEXT NOT NULL, signature TEXT NOT NULL, release_notes TEXT, critical INTEGER NOT NULL DEFAULT 0, phased_rollout_interval INTEGER, created_at INTEGER NOT NULL);`,
   `CREATE INDEX idx_versions_app_channel ON versions(app_id, channel, build_number DESC);`,

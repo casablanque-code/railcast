@@ -276,6 +276,9 @@ interface BearerIdentity {
   // The app this token is scoped to, or null for an old-style,
   // account-wide token (see migration 0009_per_app_tokens.sql).
   appId: string | null;
+  // 'publish' can upload/register versions/delete apps; 'read' can only
+  // hit read-only endpoints. See migration 0010_token_expiry_scope.sql.
+  scope: "publish" | "read";
 }
 
 async function getBearerIdentity(request: Request, env: Env): Promise<BearerIdentity | null> {
@@ -283,18 +286,34 @@ async function getBearerIdentity(request: Request, env: Env): Promise<BearerIden
   const token = authHeader.replace("Bearer ", "");
   if (!token) return null;
   const tokenHash = await sha256Hex(token);
+  const now = Math.floor(Date.now() / 1000);
 
+  // expires_at IS NULL means "never expires" — matches every token issued
+  // before this feature existed, and any new token created without a TTL.
+  // An expired token is treated as if it doesn't exist at all (401, same
+  // as an unknown token), rather than a distinct "expired" error, so this
+  // filters it out of the SELECT itself instead of checking afterward.
   const row = await env.DB.prepare(
-    `SELECT users.id as id, users.email as email, api_tokens.app_id as app_id
+    `SELECT users.id as id, users.email as email, api_tokens.app_id as app_id,
+            api_tokens.scope as scope
      FROM api_tokens
      JOIN users ON users.id = api_tokens.user_id
-     WHERE api_tokens.token = ?`
+     WHERE api_tokens.token = ? AND (api_tokens.expires_at IS NULL OR api_tokens.expires_at > ?)`
   )
-    .bind(tokenHash)
-    .first<{ id: string; email: string; app_id: string | null }>();
+    .bind(tokenHash, now)
+    .first<{ id: string; email: string; app_id: string | null; scope: "publish" | "read" }>();
 
   if (!row) return null;
-  return { userId: row.id, email: row.email, appId: row.app_id };
+
+  // Best-effort — a stolen-but-unused token being visibly different from
+  // one still in active use (dashboard "last used" column) is a nice
+  // signal, but must never be the reason a legitimate request fails.
+  await env.DB.prepare(`UPDATE api_tokens SET last_used_at = ? WHERE token = ?`)
+    .bind(now, tokenHash)
+    .run()
+    .catch(() => {});
+
+  return { userId: row.id, email: row.email, appId: row.app_id, scope: row.scope };
 }
 
 // Note: there is no combined "session or bearer" helper anymore — the two
@@ -709,6 +728,9 @@ async function handleApiCreateApp(request: Request, env: Env): Promise<Response>
       403
     );
   }
+  if (identity && identity.scope !== "publish") {
+    return jsonResponse({ error: "forbidden", message: "This token does not have publish scope" }, 403);
+  }
 
   if (!hasValidOrigin(request, new URL(request.url).origin)) {
     return jsonResponse({ error: "bad_origin" }, 403);
@@ -762,10 +784,19 @@ async function handleApiListTokens(request: Request, env: Env): Promise<Response
   if (!user) return jsonResponse({ error: "unauthorized" }, 401);
 
   const { results } = await env.DB.prepare(
-    `SELECT id, preview, app_id, created_at FROM api_tokens WHERE user_id = ? ORDER BY created_at DESC`
+    `SELECT id, preview, app_id, scope, expires_at, last_used_at, created_at
+     FROM api_tokens WHERE user_id = ? ORDER BY created_at DESC`
   )
     .bind(user.id)
-    .all<{ id: string; preview: string; app_id: string | null; created_at: number }>();
+    .all<{
+      id: string;
+      preview: string;
+      app_id: string | null;
+      scope: string;
+      expires_at: number | null;
+      last_used_at: number | null;
+      created_at: number;
+    }>();
 
   return jsonResponse({ tokens: results ?? [] });
 }
@@ -778,12 +809,13 @@ async function handleApiCreateToken(request: Request, env: Env): Promise<Respons
     return jsonResponse({ error: "bad_origin" }, 403);
   }
 
-  let body: { app_id?: string } = {};
+  let body: { app_id?: string; scope?: string; expires_in_days?: number } = {};
   try {
-    // Body is optional — an empty body (or app_id omitted from it) keeps
-    // creating the old-style account-wide token, same as before this
-    // feature existed. Read as text first so an empty body (which isn't
-    // valid JSON on its own) doesn't get treated as a parse error.
+    // Body is optional — an empty body (or these fields omitted from it)
+    // keeps creating the old-style account-wide, publish-scoped,
+    // never-expiring token, same as before this feature existed. Read as
+    // text first so an empty body (which isn't valid JSON on its own)
+    // doesn't get treated as a parse error.
     const raw = await request.text();
     if (raw.trim().length > 0) {
       body = JSON.parse(raw);
@@ -806,19 +838,44 @@ async function handleApiCreateToken(request: Request, env: Env): Promise<Respons
     }
   }
 
+  const scope = body.scope ?? "publish";
+  if (scope !== "publish" && scope !== "read") {
+    return jsonResponse(
+      { error: "invalid_input", message: "scope must be 'publish' or 'read'" },
+      400
+    );
+  }
+
+  let expiresAt: number | null = null;
+  if (body.expires_in_days !== undefined) {
+    const days = body.expires_in_days;
+    // Upper bound is arbitrary but deliberate: a token that "expires" 50
+    // years out is really just an unbounded token with extra steps, and
+    // catches an obvious unit mistake (someone passing hours or minutes
+    // meaning to pass days).
+    if (!Number.isInteger(days) || days < 1 || days > 3650) {
+      return jsonResponse(
+        { error: "invalid_input", message: "expires_in_days must be an integer between 1 and 3650" },
+        400
+      );
+    }
+    expiresAt = Math.floor(Date.now() / 1000) + days * 86400;
+  }
+
   const id = crypto.randomUUID();
   const token = randomToken();
   const tokenHash = await sha256Hex(token);
   const preview = `${token.slice(0, 8)}…`;
   await env.DB.prepare(
-    `INSERT INTO api_tokens (id, token, preview, user_id, app_id, created_at) VALUES (?, ?, ?, ?, ?, unixepoch())`
+    `INSERT INTO api_tokens (id, token, preview, user_id, app_id, scope, expires_at, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, unixepoch())`
   )
-    .bind(id, tokenHash, preview, user.id, appId)
+    .bind(id, tokenHash, preview, user.id, appId, scope, expiresAt)
     .run();
 
   // Shown once — the dashboard must display and copy it immediately, we
   // only ever stored the hash so we genuinely cannot show it again.
-  return jsonResponse({ id, token, app_id: appId }, 201);
+  return jsonResponse({ id, token, app_id: appId, scope, expires_at: expiresAt }, 201);
 }
 
 async function handleApiDeleteToken(
@@ -874,6 +931,9 @@ async function handleApiDeleteApp(request: Request, env: Env, appId: string): Pr
   if (identity && identity.appId !== null && identity.appId !== appId) {
     return jsonResponse({ error: "forbidden", message: "This token is scoped to a different app" }, 403);
   }
+  if (identity && identity.scope !== "publish") {
+    return jsonResponse({ error: "forbidden", message: "This token does not have publish scope" }, 403);
+  }
 
   // Versions first (no ON DELETE CASCADE on this FK — D1 doesn't enforce
   // foreign keys by default anyway, so do it explicitly and in the safe
@@ -907,7 +967,8 @@ async function handleApiDeleteApp(request: Request, env: Env, appId: string): Pr
 async function requireAppOwnership(
   request: Request,
   env: Env,
-  appId: string
+  appId: string,
+  requiredScope: "read" | "publish" = "publish"
 ): Promise<{ ok: true } | { ok: false; response: Response }> {
   const identity = await getBearerIdentity(request, env);
   if (!identity) {
@@ -940,6 +1001,17 @@ async function requireAppOwnership(
     return {
       ok: false,
       response: new Response("This token is scoped to a different app", { status: 403 }),
+    };
+  }
+  // 'publish' is a superset of 'read' — a publish-scoped token can do
+  // anything a read-scoped one can, but not vice versa. Endpoints that
+  // mutate anything (upload, register a version, delete an app) require
+  // 'publish'; read-only endpoints (listing releases) pass "read" here and
+  // accept either scope.
+  if (requiredScope === "publish" && identity.scope !== "publish") {
+    return {
+      ok: false,
+      response: new Response("This token does not have publish scope", { status: 403 }),
     };
   }
 
