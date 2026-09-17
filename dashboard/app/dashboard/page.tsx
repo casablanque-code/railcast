@@ -26,6 +26,9 @@ export default function DashboardPage() {
   const [newToken, setNewToken] = useState<string | null>(null);
   const [tokenError, setTokenError] = useState<string | null>(null);
   const [revokingId, setRevokingId] = useState<string | null>(null);
+  const [tokenScope, setTokenScope] = useState<"publish" | "read">("publish");
+  const [tokenAppId, setTokenAppId] = useState<string>(""); // "" = account-wide
+  const [tokenExpiryDays, setTokenExpiryDays] = useState<string>(""); // "" = never
 
   const [deletingAppId, setDeletingAppId] = useState<string | null>(null);
   const [appDeleteError, setAppDeleteError] = useState<string | null>(null);
@@ -56,7 +59,11 @@ export default function DashboardPage() {
     setCreatingToken(true);
     setTokenError(null);
     try {
-      const { token } = await api.createToken();
+      const { token } = await api.createToken({
+        app_id: tokenAppId || undefined,
+        scope: tokenScope,
+        expires_in_days: tokenExpiryDays ? Number(tokenExpiryDays) : undefined,
+      });
       setNewToken(token);
       navigator.clipboard?.writeText(token).catch(() => {});
       await refresh();
@@ -123,24 +130,52 @@ export default function DashboardPage() {
   const inlineApps = appList.slice(0, INLINE_LIMIT);
   const restApps = appList.slice(INLINE_LIMIT);
 
-  const tokenRow = (t: TokenPreview) => (
-    <div
-      key={t.id}
-      className="flex items-center justify-between border-b border-line pb-3 text-sm last:border-0 last:pb-0"
-    >
-      <span className="code-chip">{t.preview}</span>
-      <div className="flex items-center gap-3">
-        <span className="text-ink/50">created {formatDate(t.created_at)}</span>
-        <button
-          onClick={() => onRevokeToken(t.id)}
-          disabled={revokingId === t.id}
-          className="text-xs text-red-600 hover:underline disabled:opacity-50"
-        >
-          {revokingId === t.id ? "Revoking…" : "Revoke"}
-        </button>
+  const tokenRow = (t: TokenPreview) => {
+    const scopedApp = t.app_id ? appList.find((a) => a.id === t.app_id) : null;
+    const isExpired = t.expires_at !== null && t.expires_at * 1000 < Date.now();
+
+    return (
+      <div
+        key={t.id}
+        className="flex items-center justify-between gap-4 border-b border-line pb-3 text-sm last:border-0 last:pb-0"
+      >
+        <div className="min-w-0 space-y-1">
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="code-chip">{t.preview}</span>
+            <span
+              className={`rounded px-1.5 py-0.5 text-[11px] font-medium uppercase tracking-wide ${
+                t.scope === "read" ? "bg-ink/5 text-ink/60" : "bg-accent-soft text-accent"
+              }`}
+            >
+              {t.scope}
+            </span>
+            {isExpired && (
+              <span className="rounded bg-red-50 px-1.5 py-0.5 text-[11px] font-medium uppercase tracking-wide text-red-600">
+                expired
+              </span>
+            )}
+          </div>
+          <p className="text-xs text-ink/50">
+            {t.app_id ? `scoped to ${scopedApp?.name || t.app_id}` : "works for every app you own"}
+            {" · "}
+            {t.expires_at ? `expires ${formatDate(t.expires_at)}` : "never expires"}
+            {" · "}
+            {t.last_used_at ? `last used ${formatDate(t.last_used_at)}` : "never used"}
+          </p>
+        </div>
+        <div className="flex shrink-0 items-center gap-3">
+          <span className="text-ink/50">created {formatDate(t.created_at)}</span>
+          <button
+            onClick={() => onRevokeToken(t.id)}
+            disabled={revokingId === t.id}
+            className="text-xs text-red-600 hover:underline disabled:opacity-50"
+          >
+            {revokingId === t.id ? "Revoking…" : "Revoke"}
+          </button>
+        </div>
       </div>
-    </div>
-  );
+    );
+  };
 
   const appRow = (app: App) => (
     <div
@@ -215,11 +250,57 @@ export default function DashboardPage() {
           </div>
         )}
 
-        <div className="mb-4 flex items-center gap-3">
-          <button className="btn" onClick={onCreateToken} disabled={creatingToken}>
-            {creatingToken ? "Creating…" : "Generate new token"}
-          </button>
-          {tokenError && <p className="text-sm text-red-600">{tokenError}</p>}
+        <div className="card mb-4 space-y-4">
+          <p className="text-xs text-ink/50">
+            By default a token can publish to every app you own and never expires — narrow it down
+            if you&apos;re handing it to CI or a script that only needs one app, or only needs to
+            read release info.
+          </p>
+          <div className="grid gap-4 sm:grid-cols-3">
+            <div>
+              <label className="label">Scope</label>
+              <select
+                className="input"
+                value={tokenScope}
+                onChange={(e) => setTokenScope(e.target.value as "publish" | "read")}
+              >
+                <option value="publish">Publish (upload &amp; manage)</option>
+                <option value="read">Read-only (list releases)</option>
+              </select>
+            </div>
+            <div>
+              <label className="label">App</label>
+              <select className="input" value={tokenAppId} onChange={(e) => setTokenAppId(e.target.value)}>
+                <option value="">All apps (account-wide)</option>
+                {appList.map((a) => (
+                  <option key={a.id} value={a.id}>
+                    {a.name || a.id}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <label className="label">Expires</label>
+              <select
+                className="input"
+                value={tokenExpiryDays}
+                onChange={(e) => setTokenExpiryDays(e.target.value)}
+              >
+                <option value="">Never</option>
+                <option value="7">In 7 days</option>
+                <option value="30">In 30 days</option>
+                <option value="90">In 90 days</option>
+                <option value="365">In 1 year</option>
+              </select>
+            </div>
+          </div>
+
+          <div className="flex items-center gap-3">
+            <button className="btn" onClick={onCreateToken} disabled={creatingToken}>
+              {creatingToken ? "Creating…" : "Generate new token"}
+            </button>
+            {tokenError && <p className="text-sm text-red-600">{tokenError}</p>}
+          </div>
         </div>
 
         {tokens && tokens.length === 0 ? (

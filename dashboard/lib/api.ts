@@ -58,7 +58,17 @@ export interface App {
 export interface TokenPreview {
   id: string;
   preview: string;
+  app_id: string | null; // null = account-wide (works for every app you own)
+  scope: "publish" | "read";
+  expires_at: number | null; // null = never expires
+  last_used_at: number | null; // null = never used
   created_at: number;
+}
+
+export interface CreateTokenOptions {
+  app_id?: string; // omit for an account-wide token
+  scope?: "publish" | "read"; // defaults to "publish" server-side
+  expires_in_days?: number; // omit for a token that never expires
 }
 
 export const api = {
@@ -87,6 +97,13 @@ export const api = {
     }),
   deleteApp: (id: string) => request<void>(`/api/apps/${id}`, { method: "DELETE" }),
   listTokens: () => request<{ tokens: TokenPreview[] }>("/api/tokens"),
-  createToken: () => request<{ id: string; token: string }>("/api/tokens", { method: "POST" }),
+  createToken: (options?: CreateTokenOptions) =>
+    request<{ id: string; token: string; app_id: string | null; scope: string; expires_at: number | null }>(
+      "/api/tokens",
+      {
+        method: "POST",
+        body: JSON.stringify(options ?? {}),
+      }
+    ),
   deleteToken: (id: string) => request<void>(`/api/tokens/${id}`, { method: "DELETE" }),
 };
