@@ -49,14 +49,15 @@ func cmdList(args []string) {
 
 	fs := flag.NewFlagSet("list", flag.ExitOnError)
 	appID := fs.String("app", appDefault, "only list this app's releases — defaults to .railcast.json in this directory if present, otherwise every app the token can see")
-	token := fs.String("token", os.Getenv("RAILCAST_TOKEN"), "API token (defaults to $RAILCAST_TOKEN)")
+	token := fs.String("token", "", "API token (defaults to $RAILCAST_TOKEN, then a token saved by 'railcast init' in this directory)")
 	baseURL := fs.String("base-url", "", "Railcast API base URL (default: "+defaultBaseURL+", override with $RAILCAST_BASE_URL)")
 	asJSON := fs.Bool("json", false, "print raw JSON instead of a formatted table")
 	fs.Parse(args)
 	*baseURL = resolveBaseURL(*baseURL)
+	*token = resolveToken(*token)
 
 	if *token == "" {
-		fail("missing required flag: --token (or $RAILCAST_TOKEN)")
+		fail("missing required flag: --token (or $RAILCAST_TOKEN, or a token saved by 'railcast init')")
 	}
 
 	var groups []appReleases

@@ -47,10 +47,11 @@ func cmdPublish(args []string) {
 	critical := fs.Bool("critical", false, "mark this update as critical (Sparkle: sparkle:criticalUpdate)")
 	phasedRollout := fs.Int("phased-rollout", 0, "phased rollout interval in seconds between install groups, 0 to disable (Sparkle: sparkle:phasedRolloutInterval)")
 	keyPath := fs.String("key", keyDefault, "path to the private signing key — defaults to the one from 'railcast init' in this directory")
-	token := fs.String("token", os.Getenv("RAILCAST_TOKEN"), "API token (defaults to $RAILCAST_TOKEN)")
+	token := fs.String("token", "", "API token (defaults to $RAILCAST_TOKEN, then a token saved by 'railcast init' in this directory)")
 	baseURL := fs.String("base-url", "", "Railcast API base URL (default: "+defaultBaseURL+", override with $RAILCAST_BASE_URL)")
 	fs.Parse(args)
 	*baseURL = resolveBaseURL(*baseURL)
+	*token = resolveToken(*token)
 
 	var missing []string
 	if *appID == "" {
@@ -63,7 +64,7 @@ func cmdPublish(args []string) {
 		missing = append(missing, "--key (or run 'railcast init' in this directory first)")
 	}
 	if *token == "" {
-		missing = append(missing, "--token (or $RAILCAST_TOKEN)")
+		missing = append(missing, "--token (or $RAILCAST_TOKEN, or a token saved by 'railcast init')")
 	}
 	if len(missing) > 0 {
 		fmt.Printf("missing required flags: %s\n", strings.Join(missing, ", "))

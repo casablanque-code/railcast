@@ -28,12 +28,14 @@ func cmdInit(args []string) {
 	// still what picks the default key filename and shows up in your
 	// terminal; it does NOT need to be unique across all Railcast users.
 	appName := fs.String("app", "", "a name for this app, e.g. myapp (required, local label only)")
-	token := fs.String("token", os.Getenv("RAILCAST_TOKEN"), "API token from the dashboard (defaults to $RAILCAST_TOKEN)")
+	token := fs.String("token", "", "API token from the dashboard (defaults to $RAILCAST_TOKEN, then a token saved by an earlier 'railcast init' in this directory)")
 	baseURL := fs.String("base-url", "", "Railcast API base URL (default: "+defaultBaseURL+", override with $RAILCAST_BASE_URL)")
 	keyPath := fs.String("key", "", "where to save the private key (default: ./<app>.key)")
 	initialBuild := fs.Int("initial-build", 0, "if this app already shipped builds outside Railcast (e.g. your own CFBundleVersion counter), set this to the highest one — auto-assigned build numbers will start above it, avoiding a number that's <= a build already installed somewhere")
+	noSaveToken := fs.Bool("no-save-token", false, "don't write the token to .railcast.token — fall back to passing --token/$RAILCAST_TOKEN to every command instead")
 	fs.Parse(args)
 	*baseURL = resolveBaseURL(*baseURL)
+	*token = resolveToken(*token)
 
 	var missing []string
 	if *appName == "" {
@@ -85,6 +87,26 @@ func cmdInit(args []string) {
 		fmt.Printf("Note: couldn't write %s (%v) — pass --app and --key to 'railcast publish' explicitly.\n", projectConfigPath, err)
 	}
 
+	tokenSaved := false
+	if !*noSaveToken {
+		if err := saveToken(*token); err != nil {
+			fmt.Printf("Note: couldn't save the token to %s (%v) — pass --token or set $RAILCAST_TOKEN instead.\n", tokenFilePath, err)
+		} else {
+			tokenSaved = true
+		}
+	}
+
+	// Both files hold a live credential (the private key; the token, if
+	// saved) and must never end up committed. Best-effort — a failure here
+	// doesn't affect anything that already succeeded above.
+	gitignorePatterns := []string{"*.key"}
+	if tokenSaved {
+		gitignorePatterns = append(gitignorePatterns, tokenFilePath)
+	}
+	if err := ensureGitignored(gitignorePatterns...); err != nil {
+		fmt.Printf("Note: couldn't update .gitignore (%v) — add %s yourself if this directory is a git repo.\n", err, strings.Join(gitignorePatterns, " and "))
+	}
+
 	fmt.Println()
 	fmt.Println("Done. Keep this file safe — losing it means you can't publish updates for this app again:")
 	fmt.Printf("  %s\n", *keyPath)
@@ -93,10 +115,19 @@ func cmdInit(args []string) {
 		fmt.Printf("Auto-assigned build numbers on this app will start at %d.\n", *initialBuild+1)
 		fmt.Println()
 	}
-	fmt.Println("Tip: export RAILCAST_TOKEN=" + *token + " in your shell so you don't have to pass --token every time.")
+	if tokenSaved {
+		fmt.Printf("Token saved to %s (0600, gitignored) — 'railcast publish' and 'railcast list' in this directory will pick it up automatically, no --token needed.\n", tokenFilePath)
+		fmt.Println("Losing this file just means regenerating a token in the dashboard — unlike the key above, it's not permanent.")
+	} else {
+		fmt.Println("Tip: export RAILCAST_TOKEN=" + *token + " in your shell so you don't have to pass --token every time.")
+	}
 	fmt.Println()
 	fmt.Println("Next: publish a build from this directory")
-	fmt.Println("  railcast publish --file <path> --token <token>")
+	if tokenSaved {
+		fmt.Println("  railcast publish --file <path>")
+	} else {
+		fmt.Println("  railcast publish --file <path> --token <token>")
+	}
 	fmt.Println()
 	printBox(
 		"Add these to your app's Info.plist",

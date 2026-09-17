@@ -67,7 +67,9 @@ Usage:
   railcast help           Show this message
 
 Every command needs a token — get one at https://railcast.casablanque.com/dashboard
-Set it once and skip retyping --token: export RAILCAST_TOKEN=<token>
+'railcast init' saves it to .railcast.token (gitignored) in this directory, so
+publish/list pick it up automatically — no need to export $RAILCAST_TOKEN yourself
+unless you pass --no-save-token to init.
 
 Run 'railcast <command> --help' for a command's full flag list.`)
 }
