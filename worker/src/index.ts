@@ -1395,7 +1395,7 @@ async function handleDeleteRelease(
   return new Response(null, { status: 204 });
 }
 
-
+async function handleAppcast(request: Request, env: Env, appId: string): Promise<Response> {
   const url = new URL(request.url);
   const channel = url.searchParams.get("channel") ?? "stable";
 
