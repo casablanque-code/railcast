@@ -1153,3 +1153,241 @@ describe("POST /api/tokens with scope and expiry", () => {
     expect(zero.status).toBe(400);
   });
 });
+
+describe("GET /:appId/releases", () => {
+  it("401s without auth", async () => {
+    const { appId } = await seedUserAppAndToken();
+    const res = await SELF.fetch(`https://railcast.test/${appId}/releases`);
+    expect(res.status).toBe(401);
+  });
+
+  it("404s an app id that doesn't exist", async () => {
+    const { token } = await seedUserAppAndToken();
+    const res = await SELF.fetch("https://railcast.test/does-not-exist/releases", {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    expect(res.status).toBe(404);
+  });
+
+  it("403s a token scoped to a different app", async () => {
+    const { appId: appA, userId } = await seedUserAppAndToken();
+    const appB = await seedSecondApp(userId);
+    const scopedToken = await seedScopedToken(userId, appA);
+
+    const res = await SELF.fetch(`https://railcast.test/${appB}/releases`, {
+      headers: { Authorization: `Bearer ${scopedToken}` },
+    });
+    expect(res.status).toBe(403);
+  });
+
+  it("a read-scoped token can list releases (read is enough)", async () => {
+    const { appId, userId } = await seedUserAppAndToken();
+    const readToken = await seedToken(userId, { scope: "read" });
+
+    const res = await SELF.fetch(`https://railcast.test/${appId}/releases`, {
+      headers: { Authorization: `Bearer ${readToken}` },
+    });
+    expect(res.status).toBe(200);
+  });
+
+  it("lists releases across channels, newest build first within each channel", async () => {
+    const { token, appId } = await seedUserAppAndToken();
+
+    await publishVersion(token, appId, "1.0.0", 1);
+    await publishVersion(token, appId, "1.1.0", 2);
+    const filenameBeta = "MyApp-beta.zip";
+    const uploadBeta = await uploadBuild(token, appId, filenameBeta, "beta bytes");
+    await SELF.fetch(`https://railcast.test/${appId}/versions`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+      body: JSON.stringify({
+        version: "1.2.0-beta",
+        build_number: 1,
+        channel: "beta",
+        file_key: uploadBeta.file_key,
+        file_size: uploadBeta.file_size,
+        sha256: uploadBeta.sha256,
+        signature: "sig",
+      }),
+    });
+
+    const res = await SELF.fetch(`https://railcast.test/${appId}/releases`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    expect(res.status).toBe(200);
+    const body = await res.json<{
+      app_id: string;
+      releases: { id: number; channel: string; version: string; build_number: number }[];
+    }>();
+    expect(body.app_id).toBe(appId);
+
+    const stable = body.releases.filter((r) => r.channel === "stable");
+    expect(stable.map((r) => r.build_number)).toEqual([2, 1]);
+    const beta = body.releases.filter((r) => r.channel === "beta");
+    expect(beta.map((r) => r.version)).toEqual(["1.2.0-beta"]);
+  });
+});
+
+describe("DELETE /:appId/releases/:id", () => {
+  it("401s without auth", async () => {
+    const { token, appId } = await seedUserAppAndToken();
+    const publishRes = await publishVersion(token, appId, "1.0.0", 1);
+    const { id } = await publishRes.json<{ id: number }>();
+    const res = await SELF.fetch(`https://railcast.test/${appId}/releases/${id}`, {
+      method: "DELETE",
+    });
+    expect(res.status).toBe(401);
+  });
+
+  it("a read-scoped token is forbidden from deleting a release", async () => {
+    const { token, appId, userId } = await seedUserAppAndToken();
+    await publishVersion(token, appId, "1.0.0", 1);
+    const list = await SELF.fetch(`https://railcast.test/${appId}/releases`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    const { releases } = await list.json<{ releases: { id: number }[] }>();
+
+    const readToken = await seedToken(userId, { scope: "read" });
+    const res = await SELF.fetch(`https://railcast.test/${appId}/releases/${releases[0].id}`, {
+      method: "DELETE",
+      headers: { Authorization: `Bearer ${readToken}` },
+    });
+    expect(res.status).toBe(403);
+  });
+
+  it("404s deleting a release id that belongs to a different app", async () => {
+    const { token, appId: appA, userId } = await seedUserAppAndToken();
+    await publishVersion(token, appA, "1.0.0", 1);
+    const list = await SELF.fetch(`https://railcast.test/${appA}/releases`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    const { releases } = await list.json<{ releases: { id: number }[] }>();
+
+    const appB = await seedSecondApp(userId);
+    const res = await SELF.fetch(`https://railcast.test/${appB}/releases/${releases[0].id}`, {
+      method: "DELETE",
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    expect(res.status).toBe(404);
+
+    // And the release must still exist, untouched, on the real app.
+    const stillThere = await env.DB.prepare(`SELECT 1 FROM versions WHERE id = ?`)
+      .bind(releases[0].id)
+      .first();
+    expect(stillThere).not.toBeNull();
+  });
+
+  it("404s an unknown release id", async () => {
+    const { token, appId } = await seedUserAppAndToken();
+    const res = await SELF.fetch(`https://railcast.test/${appId}/releases/999999`, {
+      method: "DELETE",
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    expect(res.status).toBe(404);
+  });
+
+  it("400s a non-numeric release id", async () => {
+    const { token, appId } = await seedUserAppAndToken();
+    const res = await SELF.fetch(`https://railcast.test/${appId}/releases/not-a-number`, {
+      method: "DELETE",
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    expect(res.status).toBe(400);
+  });
+
+  it("deletes the release, removes it from the appcast, and deletes the R2 object", async () => {
+    const { token, appId } = await seedUserAppAndToken();
+    const publishRes = await publishVersion(token, appId, "1.0.0", 1);
+    const { id, file_key } = await publishRes.json<{ id: number; file_key: string }>();
+
+    // Sanity: the object is actually in R2 before we delete anything.
+    expect(await env.BUILDS.head(file_key)).not.toBeNull();
+
+    const res = await SELF.fetch(`https://railcast.test/${appId}/releases/${id}`, {
+      method: "DELETE",
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    expect(res.status).toBe(204);
+
+    const row = await env.DB.prepare(`SELECT 1 FROM versions WHERE id = ?`).bind(id).first();
+    expect(row).toBeNull();
+
+    expect(await env.BUILDS.head(file_key)).toBeNull();
+
+    const appcastRes = await SELF.fetch(`https://railcast.test/${appId}/appcast.xml`);
+    expect(appcastRes.status).toBe(404);
+  });
+
+  it("does not delete the R2 object while another release row still references the same file_key", async () => {
+    const { token, appId } = await seedUserAppAndToken();
+    const publishRes = await publishVersion(token, appId, "1.0.0", 1);
+    const { id: firstId, file_key } = await publishRes.json<{ id: number; file_key: string }>();
+
+    // Simulated edge case: two version rows pointing at the same file_key.
+    // Not reachable through the normal API (upload's "already published"
+    // check prevents it), but cheap to guard against directly rather than
+    // assume it can never happen.
+    const now = Math.floor(Date.now() / 1000);
+    await env.DB.prepare(
+      `INSERT INTO versions (app_id, channel, version, build_number, file_key, file_size, sha256, signature, critical, created_at)
+       VALUES (?, 'stable', '1.0.1', 2, ?, 1, ?, 'sig', 0, ?)`
+    )
+      .bind(appId, file_key, "0".repeat(64), now)
+      .run();
+
+    const del1 = await SELF.fetch(`https://railcast.test/${appId}/releases/${firstId}`, {
+      method: "DELETE",
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    expect(del1.status).toBe(204);
+
+    // The other row still points at file_key, so the object must survive.
+    expect(await env.BUILDS.head(file_key)).not.toBeNull();
+
+    const secondRow = await env.DB.prepare(`SELECT id FROM versions WHERE file_key = ?`)
+      .bind(file_key)
+      .first<{ id: number }>();
+
+    const del2 = await SELF.fetch(`https://railcast.test/${appId}/releases/${secondRow!.id}`, {
+      method: "DELETE",
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    expect(del2.status).toBe(204);
+
+    // Now nothing references it — the object should finally be gone.
+    expect(await env.BUILDS.head(file_key)).toBeNull();
+  });
+});
+
+describe("GET /api/apps with a bearer token", () => {
+  it("an account-wide token lists every app the account owns", async () => {
+    const { token, appId: appA, userId } = await seedUserAppAndToken();
+    const appB = await seedSecondApp(userId);
+
+    const res = await SELF.fetch("https://railcast.test/api/apps", {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    expect(res.status).toBe(200);
+    const body = await res.json<{ apps: { id: string }[] }>();
+    const ids = body.apps.map((a) => a.id).sort();
+    expect(ids).toEqual([appA, appB].sort());
+  });
+
+  it("a per-app scoped token only sees the one app it's scoped to", async () => {
+    const { appId: appA, userId } = await seedUserAppAndToken();
+    await seedSecondApp(userId);
+    const scopedToken = await seedScopedToken(userId, appA);
+
+    const res = await SELF.fetch("https://railcast.test/api/apps", {
+      headers: { Authorization: `Bearer ${scopedToken}` },
+    });
+    expect(res.status).toBe(200);
+    const body = await res.json<{ apps: { id: string }[] }>();
+    expect(body.apps.map((a) => a.id)).toEqual([appA]);
+  });
+
+  it("401s without a session or a token", async () => {
+    const res = await SELF.fetch("https://railcast.test/api/apps");
+    expect(res.status).toBe(401);
+  });
+});

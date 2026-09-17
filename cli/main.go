@@ -25,6 +25,8 @@ func main() {
 		cmdInit(os.Args[2:])
 	case "publish":
 		cmdPublish(os.Args[2:])
+	case "list", "ls":
+		cmdList(os.Args[2:])
 	case "version", "--version", "-v":
 		fmt.Println("railcast", version)
 	case "help", "--help", "-h":
@@ -53,6 +55,12 @@ Usage:
       archives (.dmg/.pkg) where this can't be auto-detected.
       Add --critical or --phased-rollout <seconds> for Sparkle's staged
       rollout controls — see 'railcast publish --help' for the full list.
+
+  railcast list (or: ls) --token <token>
+      Show published apps and their releases. With no --app, lists every
+      app your token can see; with --app (or a .railcast.json in this
+      directory), shows just that app's releases. Add --json for
+      machine-readable output.
 
   railcast keygen        Generate a signing key without creating an app
   railcast version        Print the CLI version

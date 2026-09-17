@@ -701,14 +701,29 @@ async function handleApiMe(request: Request, env: Env): Promise<Response> {
 }
 
 async function handleApiListApps(request: Request, env: Env): Promise<Response> {
-  const user = await getSessionUser(request, env);
-  if (!user) return jsonResponse({ error: "unauthorized" }, 401);
+  const sessionUser = await getSessionUser(request, env);
+  const identity = sessionUser ? null : await getBearerIdentity(request, env);
+  const userId = sessionUser?.id ?? identity?.userId;
+  if (!userId) return jsonResponse({ error: "unauthorized" }, 401);
 
-  const { results } = await env.DB.prepare(
-    `SELECT id, name, signing_public_key, beta_token, created_at FROM apps WHERE owner_user_id = ? ORDER BY created_at DESC`
-  )
-    .bind(user.id)
-    .all<{ id: string; name: string; signing_public_key: string; beta_token: string; created_at: number }>();
+  // A per-app scoped token should only ever learn about the one app it's
+  // scoped to — listing every app on the account would leak the existence
+  // (ids, names) of apps that token has no business knowing about.
+  const scopedAppId = identity?.appId ?? null;
+
+  const { results } = scopedAppId
+    ? await env.DB.prepare(
+        `SELECT id, name, signing_public_key, beta_token, created_at FROM apps
+         WHERE owner_user_id = ? AND id = ? ORDER BY created_at DESC`
+      )
+        .bind(userId, scopedAppId)
+        .all<{ id: string; name: string; signing_public_key: string; beta_token: string; created_at: number }>()
+    : await env.DB.prepare(
+        `SELECT id, name, signing_public_key, beta_token, created_at FROM apps
+         WHERE owner_user_id = ? ORDER BY created_at DESC`
+      )
+        .bind(userId)
+        .all<{ id: string; name: string; signing_public_key: string; beta_token: string; created_at: number }>();
 
   return jsonResponse({ apps: results ?? [] });
 }
@@ -1248,7 +1263,7 @@ async function handleCreateVersion(request: Request, env: Env, appId: string): P
      SELECT ?, ?, ?,
        COALESCE(?, (SELECT COALESCE(MAX(build_number), 0) FROM versions WHERE app_id = ? AND channel = ?) + 1),
        ?, ?, ?, ?, ?, ?, ?, ?
-     RETURNING build_number`
+     RETURNING id, build_number`
   )
     .bind(
       appId,
@@ -1266,23 +1281,121 @@ async function handleCreateVersion(request: Request, env: Env, appId: string): P
       phasedRolloutInterval ?? null,
       createdAt
     )
-    .first<{ build_number: number }>();
+    .first<{ id: number; build_number: number }>();
 
   const finalBuildNumber = inserted!.build_number;
 
   return new Response(
     JSON.stringify({
+      id: inserted!.id,
       app_id: appId,
       channel,
       version,
       build_number: finalBuildNumber,
+      file_key,
       appcast_url: `/${appId}/appcast.xml?channel=${encodeURIComponent(channel)}`,
     }),
     { status: 201, headers: { "Content-Type": "application/json" } }
   );
 }
 
-async function handleAppcast(request: Request, env: Env, appId: string): Promise<Response> {
+interface ReleaseRow {
+  id: number;
+  channel: string;
+  version: string;
+  build_number: number;
+  file_key: string;
+  file_size: number;
+  sha256: string;
+  release_notes: string | null;
+  critical: number;
+  phased_rollout_interval: number | null;
+  created_at: number;
+}
+
+// Powers both the dashboard and `railcast list` in the CLI. Read-only, so
+// either a "read" or "publish" scoped token can call it (requireAppOwnership
+// defaults to requiring "publish" — pass "read" explicitly here).
+async function handleListReleases(request: Request, env: Env, appId: string): Promise<Response> {
+  const auth = await requireAppOwnership(request, env, appId, "read");
+  if (!auth.ok) return auth.response;
+
+  const appRow = await env.DB.prepare(`SELECT name FROM apps WHERE id = ?`)
+    .bind(appId)
+    .first<{ name: string }>();
+
+  // Newest-first within each channel, channel grouped together — this is
+  // the order `railcast list` renders in, and a reasonable default for the
+  // dashboard too. Signature/file_key are omitted: they're either huge
+  // (signature is base64 of a full EdDSA sig, of no interest for a listing)
+  // or purely internal (file_key), not something a CLI table needs.
+  const { results } = await env.DB.prepare(
+    `SELECT id, channel, version, build_number, file_key, file_size, sha256,
+            release_notes, critical, phased_rollout_interval, created_at
+     FROM versions
+     WHERE app_id = ?
+     ORDER BY channel ASC, build_number DESC`
+  )
+    .bind(appId)
+    .all<ReleaseRow>();
+
+  return jsonResponse({
+    app_id: appId,
+    app_name: appRow?.name ?? null,
+    releases: results ?? [],
+  });
+}
+
+// Deletes a single release: the DB row, and — if no other release still
+// points at the same file_key (shouldn't happen given upload's
+// already-published check, but cheap to confirm rather than assume) — the
+// underlying R2 object too, so a deleted release doesn't leave storage
+// silently billing forever.
+async function handleDeleteRelease(
+  request: Request,
+  env: Env,
+  appId: string,
+  releaseId: string
+): Promise<Response> {
+  const auth = await requireAppOwnership(request, env, appId, "publish");
+  if (!auth.ok) return auth.response;
+
+  const id = Number(releaseId);
+  if (!Number.isInteger(id) || id <= 0) {
+    return jsonResponse({ error: "invalid_input", message: "release id must be a positive integer" }, 400);
+  }
+
+  const release = await env.DB.prepare(
+    `SELECT file_key FROM versions WHERE id = ? AND app_id = ?`
+  )
+    .bind(id, appId)
+    .first<{ file_key: string }>();
+
+  if (!release) {
+    return jsonResponse({ error: "not_found" }, 404);
+  }
+
+  await env.DB.prepare(`DELETE FROM versions WHERE id = ? AND app_id = ?`).bind(id, appId).run();
+
+  const stillReferenced = await env.DB.prepare(
+    `SELECT 1 FROM versions WHERE file_key = ? LIMIT 1`
+  )
+    .bind(release.file_key)
+    .first();
+
+  if (!stillReferenced) {
+    // Best-effort: the DB row is already gone either way, which is the
+    // part that actually matters for appcast.xml and for the immutable
+    // file_key check on future uploads. If R2 cleanup fails, the object
+    // just becomes storage we're paying for but nothing points at — worth
+    // fixing but not worth failing the whole delete over.
+    await env.BUILDS.delete(release.file_key).catch(() => {});
+  }
+
+  return new Response(null, { status: 204 });
+}
+
+
   const url = new URL(request.url);
   const channel = url.searchParams.get("channel") ?? "stable";
 
@@ -1408,6 +1521,18 @@ export default {
     if (versionsMatch && request.method === "POST") {
       const [, appId] = versionsMatch;
       return handleCreateVersion(request, env, appId);
+    }
+
+    const releasesListMatch = url.pathname.match(/^\/([a-zA-Z0-9_-]+)\/releases$/);
+    if (releasesListMatch && request.method === "GET") {
+      const [, appId] = releasesListMatch;
+      return handleListReleases(request, env, appId);
+    }
+
+    const releaseDeleteMatch = url.pathname.match(/^\/([a-zA-Z0-9_-]+)\/releases\/([a-zA-Z0-9_-]+)$/);
+    if (releaseDeleteMatch && request.method === "DELETE") {
+      const [, appId, releaseId] = releaseDeleteMatch;
+      return handleDeleteRelease(request, env, appId, releaseId);
     }
 
     return new Response("Railcast API is alive", { status: 200 });
