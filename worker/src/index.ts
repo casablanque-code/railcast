@@ -35,6 +35,14 @@ interface VersionRow {
   created_at: number;
 }
 
+// How many of the most recent builds on a channel actually get served by
+// appcast.xml (see handleAppcast's query). This is a single source of
+// truth on purpose: it's also returned from handleListReleases as
+// history_limit, so the CLI's `railcast cleanup` retention logic reads
+// this number from the server instead of hardcoding its own guess — the
+// two can never drift apart and quietly disagree about what "old" means.
+const APPCAST_HISTORY_LIMIT = 10;
+
 function escapeXml(s: string): string {
   return s
     .replace(/&/g, "&amp;")
@@ -1342,6 +1350,7 @@ async function handleListReleases(request: Request, env: Env, appId: string): Pr
   return jsonResponse({
     app_id: appId,
     app_name: appRow?.name ?? null,
+    history_limit: APPCAST_HISTORY_LIMIT,
     releases: results ?? [],
   });
 }
@@ -1366,16 +1375,42 @@ async function handleDeleteRelease(
   }
 
   const release = await env.DB.prepare(
-    `SELECT file_key FROM versions WHERE id = ? AND app_id = ?`
+    `SELECT file_key, channel FROM versions WHERE id = ? AND app_id = ?`
   )
     .bind(id, appId)
-    .first<{ file_key: string }>();
+    .first<{ file_key: string; channel: string }>();
 
   if (!release) {
     return jsonResponse({ error: "not_found" }, 404);
   }
 
-  await env.DB.prepare(`DELETE FROM versions WHERE id = ? AND app_id = ?`).bind(id, appId).run();
+  // Refuse to delete a channel's only remaining release — leaving an
+  // active app with zero entries on a channel silently breaks the
+  // appcast feed for anyone still on that channel, with no way back
+  // short of publishing a brand new build. The "> 1" check happens
+  // inside the DELETE's own WHERE clause (a correlated subquery over the
+  // same table) rather than as a separate SELECT beforehand, so it's
+  // atomic: two concurrent deletes racing to empty a 2-release channel
+  // can't both succeed, because SQLite serializes writes to the table and
+  // the second DELETE's subquery re-evaluates against the post-first-delete
+  // count.
+  const result = await env.DB.prepare(
+    `DELETE FROM versions
+     WHERE id = ? AND app_id = ?
+       AND (SELECT COUNT(*) FROM versions v2 WHERE v2.app_id = versions.app_id AND v2.channel = versions.channel) > 1`
+  )
+    .bind(id, appId)
+    .run();
+
+  if (result.meta.changes === 0) {
+    return jsonResponse(
+      {
+        error: "conflict",
+        message: `Cannot delete the only release on channel '${release.channel}' — delete the app itself if you want to remove it entirely.`,
+      },
+      409
+    );
+  }
 
   const stillReferenced = await env.DB.prepare(
     `SELECT 1 FROM versions WHERE file_key = ? LIMIT 1`
@@ -1420,9 +1455,9 @@ async function handleAppcast(request: Request, env: Env, appId: string): Promise
      FROM versions
      WHERE app_id = ? AND channel = ?
      ORDER BY build_number DESC
-     LIMIT 10`
+     LIMIT ?`
   )
-    .bind(appId, channel)
+    .bind(appId, channel, APPCAST_HISTORY_LIMIT)
     .all<VersionRow>();
 
   if (!results || results.length === 0) {

@@ -67,7 +67,7 @@ func cmdList(args []string) {
 		// listing every app on the account, which also means this works
 		// fine with a per-app scoped token that couldn't see the others
 		// anyway.
-		name, releases, err := doListReleases(*baseURL, *token, *appID)
+		name, releases, _, err := doListReleases(*baseURL, *token, *appID)
 		if err != nil {
 			fail("could not list releases: %v", err)
 		}
@@ -82,7 +82,7 @@ func cmdList(args []string) {
 			return
 		}
 		for _, a := range apps {
-			_, releases, err := doListReleases(*baseURL, *token, a.ID)
+			_, releases, _, err := doListReleases(*baseURL, *token, a.ID)
 			if err != nil {
 				// Don't let one app's transient error hide every other
 				// app's releases — report it and keep going.
@@ -220,40 +220,79 @@ func doListApps(baseURL, token string) ([]appSummary, error) {
 	return out.Apps, nil
 }
 
-func doListReleases(baseURL, token, appID string) (appName string, releases []releaseSummary, err error) {
+func doListReleases(baseURL, token, appID string) (appName string, releases []releaseSummary, historyLimit int, err error) {
 	url := fmt.Sprintf("%s/%s/releases", strings.TrimRight(baseURL, "/"), appID)
 	req, reqErr := http.NewRequest(http.MethodGet, url, nil)
 	if reqErr != nil {
-		return "", nil, reqErr
+		return "", nil, 0, reqErr
 	}
 	req.Header.Set("Authorization", "Bearer "+token)
 
 	resp, doErr := http.DefaultClient.Do(req)
 	if doErr != nil {
-		return "", nil, doErr
+		return "", nil, 0, doErr
 	}
 	defer resp.Body.Close()
 
 	body, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode == http.StatusNotFound {
-		return "", nil, fmt.Errorf(
+		return "", nil, 0, fmt.Errorf(
 			"no app with id %q — --app takes the id from .railcast.json (or the one printed by 'railcast init'), not the name you gave --app at init time",
 			appID,
 		)
 	}
 	if resp.StatusCode == http.StatusForbidden {
-		return "", nil, fmt.Errorf("token doesn't have access to app %q", appID)
+		return "", nil, 0, fmt.Errorf("token doesn't have access to app %q", appID)
 	}
 	if resp.StatusCode != http.StatusOK {
-		return "", nil, fmt.Errorf("server returned %d: %s", resp.StatusCode, string(body))
+		return "", nil, 0, fmt.Errorf("server returned %d: %s", resp.StatusCode, string(body))
 	}
 
 	var out struct {
-		AppName  string           `json:"app_name"`
-		Releases []releaseSummary `json:"releases"`
+		AppName      string           `json:"app_name"`
+		HistoryLimit int              `json:"history_limit"`
+		Releases     []releaseSummary `json:"releases"`
 	}
 	if err := json.Unmarshal(body, &out); err != nil {
-		return "", nil, fmt.Errorf("could not parse response: %w", err)
+		return "", nil, 0, fmt.Errorf("could not parse response: %w", err)
 	}
-	return out.AppName, out.Releases, nil
+	// Defensive default in case an older/differently configured server
+	// doesn't send history_limit at all — better to fall back to the
+	// appcast's documented default than to treat 0 as "keep nothing".
+	if out.HistoryLimit <= 0 {
+		out.HistoryLimit = 10
+	}
+	return out.AppName, out.Releases, out.HistoryLimit, nil
+}
+
+// doDeleteRelease calls DELETE /:appId/releases/:id. A 409 means the
+// server's own last-release-on-a-channel guard refused it (see
+// handleDeleteRelease) — surfaced as a normal error the caller can print,
+// not a crash, since `railcast cleanup` may legitimately race a concurrent
+// publish/delete and hit this.
+func doDeleteRelease(baseURL, token, appID string, releaseID int64) error {
+	url := fmt.Sprintf("%s/%s/releases/%d", strings.TrimRight(baseURL, "/"), appID, releaseID)
+	req, err := http.NewRequest(http.MethodDelete, url, nil)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusNoContent {
+		return nil
+	}
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode == http.StatusConflict {
+		return fmt.Errorf("refused: this is the only release left on its channel")
+	}
+	if resp.StatusCode == http.StatusNotFound {
+		return fmt.Errorf("not found (already deleted?)")
+	}
+	return fmt.Errorf("server returned %d: %s", resp.StatusCode, string(body))
 }

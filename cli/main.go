@@ -27,6 +27,8 @@ func main() {
 		cmdPublish(os.Args[2:])
 	case "list", "ls":
 		cmdList(os.Args[2:])
+	case "cleanup":
+		cmdCleanup(os.Args[2:])
 	case "version", "--version", "-v":
 		fmt.Println("railcast", version)
 	case "help", "--help", "-h":
@@ -61,6 +63,13 @@ Usage:
       app your token can see; with --app (or a .railcast.json in this
       directory), shows just that app's releases. Add --json for
       machine-readable output.
+
+  railcast cleanup --app <id>
+      Delete releases that have already fallen out of the appcast's
+      history window (the last 10 builds per channel — older ones aren't
+      served to any client anyway). Shows what would be deleted and asks
+      for confirmation; pass --yes to skip the prompt (for CI) or
+      --dry-run to only preview.
 
   railcast keygen        Generate a signing key without creating an app
   railcast version        Print the CLI version

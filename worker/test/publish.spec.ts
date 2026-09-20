@@ -1297,8 +1297,12 @@ describe("DELETE /:appId/releases/:id", () => {
 
   it("deletes the release, removes it from the appcast, and deletes the R2 object", async () => {
     const { token, appId } = await seedUserAppAndToken();
-    const publishRes = await publishVersion(token, appId, "1.0.0", 1);
-    const { id, file_key } = await publishRes.json<{ id: number; file_key: string }>();
+    // Two releases on the same channel: deleting the older one must not
+    // trip the "only release on this channel" guard, and the newer one
+    // should still serve fine in the appcast afterward.
+    const older = await publishVersion(token, appId, "1.0.0", 1);
+    const { id, file_key } = await older.json<{ id: number; file_key: string }>();
+    await publishVersion(token, appId, "1.1.0", 2);
 
     // Sanity: the object is actually in R2 before we delete anything.
     expect(await env.BUILDS.head(file_key)).not.toBeNull();
@@ -1314,13 +1318,26 @@ describe("DELETE /:appId/releases/:id", () => {
 
     expect(await env.BUILDS.head(file_key)).toBeNull();
 
+    // The newer release is still there, so the feed keeps working — it's
+    // just down to one entry now instead of two.
     const appcastRes = await SELF.fetch(`https://railcast.test/${appId}/appcast.xml`);
-    expect(appcastRes.status).toBe(404);
+    expect(appcastRes.status).toBe(200);
+    const xml = await appcastRes.text();
+    expect(xml).toContain("1.1.0");
+    expect(xml).not.toContain("1.0.0");
   });
 
   it("does not delete the R2 object while another release row still references the same file_key", async () => {
     const { token, appId } = await seedUserAppAndToken();
-    const publishRes = await publishVersion(token, appId, "1.0.0", 1);
+
+    // An extra, unrelated release so the channel never drops to a single
+    // entry while the two file_key-sharing rows below are deleted in
+    // turn — that scenario is covered separately by the last-release
+    // guard tests; this test is specifically about shared file_key
+    // cleanup and shouldn't also be exercising that guard.
+    await publishVersion(token, appId, "0.9.0", 1);
+
+    const publishRes = await publishVersion(token, appId, "1.0.0", 2);
     const { id: firstId, file_key } = await publishRes.json<{ id: number; file_key: string }>();
 
     // Simulated edge case: two version rows pointing at the same file_key.
@@ -1330,7 +1347,7 @@ describe("DELETE /:appId/releases/:id", () => {
     const now = Math.floor(Date.now() / 1000);
     await env.DB.prepare(
       `INSERT INTO versions (app_id, channel, version, build_number, file_key, file_size, sha256, signature, critical, created_at)
-       VALUES (?, 'stable', '1.0.1', 2, ?, 1, ?, 'sig', 0, ?)`
+       VALUES (?, 'stable', '1.0.1', 3, ?, 1, ?, 'sig', 0, ?)`
     )
       .bind(appId, file_key, "0".repeat(64), now)
       .run();
@@ -1354,8 +1371,121 @@ describe("DELETE /:appId/releases/:id", () => {
     });
     expect(del2.status).toBe(204);
 
-    // Now nothing references it — the object should finally be gone.
+    // Now nothing references it — the object should finally be gone. The
+    // channel still has the "0.9.0" keep-alive release, so this delete
+    // wasn't blocked by the last-release guard either.
     expect(await env.BUILDS.head(file_key)).toBeNull();
+  });
+
+  it("409s deleting the only release on a channel, and leaves it untouched", async () => {
+    const { token, appId } = await seedUserAppAndToken();
+    const publishRes = await publishVersion(token, appId, "1.0.0", 1);
+    const { id, file_key } = await publishRes.json<{ id: number; file_key: string }>();
+
+    const res = await SELF.fetch(`https://railcast.test/${appId}/releases/${id}`, {
+      method: "DELETE",
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    expect(res.status).toBe(409);
+
+    // Nothing should have moved: the DB row and the R2 object both survive.
+    const row = await env.DB.prepare(`SELECT 1 FROM versions WHERE id = ?`).bind(id).first();
+    expect(row).not.toBeNull();
+    expect(await env.BUILDS.head(file_key)).not.toBeNull();
+  });
+
+  it("allows draining a channel down to one release, then blocks the last one", async () => {
+    const { token, appId } = await seedUserAppAndToken();
+    const first = await publishVersion(token, appId, "1.0.0", 1);
+    const { id: firstId } = await first.json<{ id: number }>();
+    const second = await publishVersion(token, appId, "1.1.0", 2);
+    const { id: secondId } = await second.json<{ id: number }>();
+
+    const delFirst = await SELF.fetch(`https://railcast.test/${appId}/releases/${firstId}`, {
+      method: "DELETE",
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    expect(delFirst.status).toBe(204);
+
+    // Now only secondId is left on 'stable' — deleting it must now be
+    // refused, even though it was allowed a moment ago for firstId.
+    const delSecond = await SELF.fetch(`https://railcast.test/${appId}/releases/${secondId}`, {
+      method: "DELETE",
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    expect(delSecond.status).toBe(409);
+
+    const row = await env.DB.prepare(`SELECT 1 FROM versions WHERE id = ?`).bind(secondId).first();
+    expect(row).not.toBeNull();
+  });
+
+  it("the last-release guard is per-channel, not per-app", async () => {
+    const { token, appId } = await seedUserAppAndToken();
+    const stable = await publishVersion(token, appId, "1.0.0", 1);
+    const { id: stableId } = await stable.json<{ id: number }>();
+
+    const betaUpload = await uploadBuild(token, appId, "MyApp-beta.zip", "beta bytes");
+    await SELF.fetch(`https://railcast.test/${appId}/versions`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+      body: JSON.stringify({
+        version: "1.1.0-beta",
+        build_number: 1,
+        channel: "beta",
+        file_key: betaUpload.file_key,
+        file_size: betaUpload.file_size,
+        sha256: betaUpload.sha256,
+        signature: "sig",
+      }),
+    });
+
+    // The app now has two releases total, but only one *stable* release —
+    // the beta release on a different channel must not count toward
+    // "stable" having more than one, so this must still be blocked.
+    const res = await SELF.fetch(`https://railcast.test/${appId}/releases/${stableId}`, {
+      method: "DELETE",
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    expect(res.status).toBe(409);
+  });
+
+  it("two concurrent deletes of the last two releases on a channel: exactly one succeeds", async () => {
+    const { token, appId } = await seedUserAppAndToken();
+    const first = await publishVersion(token, appId, "1.0.0", 1);
+    const { id: firstId } = await first.json<{ id: number }>();
+    const second = await publishVersion(token, appId, "1.1.0", 2);
+    const { id: secondId } = await second.json<{ id: number }>();
+
+    const del = (id: number) =>
+      SELF.fetch(`https://railcast.test/${appId}/releases/${id}`, {
+        method: "DELETE",
+        headers: { Authorization: `Bearer ${token}` },
+      });
+
+    // Both requests see "2 releases exist" at the moment they're sent, but
+    // the guard is enforced inside the DELETE's own atomic WHERE clause —
+    // whichever one the database serializes second must see the
+    // now-current count (1) and be refused, not the stale count either
+    // request started with.
+    const [a, b] = await Promise.all([del(firstId), del(secondId)]);
+    const statuses = [a.status, b.status].sort();
+    expect(statuses).toEqual([204, 409]);
+
+    const remaining = await env.DB.prepare(`SELECT COUNT(*) as c FROM versions WHERE app_id = ?`)
+      .bind(appId)
+      .first<{ c: number }>();
+    expect(remaining?.c).toBe(1);
+  });
+
+  it("GET /:appId/releases reports the same history_limit the appcast enforces", async () => {
+    const { token, appId } = await seedUserAppAndToken();
+    await publishVersion(token, appId, "1.0.0", 1);
+
+    const res = await SELF.fetch(`https://railcast.test/${appId}/releases`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    const body = await res.json<{ history_limit: number }>();
+    expect(body.history_limit).toBe(10);
   });
 });
 
