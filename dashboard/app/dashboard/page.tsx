@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { api, ApiError, type App, type Me, type TokenPreview } from "@/lib/api";
+import { api, ApiError, type App, type Me, type Release, type TokenPreview } from "@/lib/api";
 import { CommandBlock } from "../CommandBlock";
 import { CopyButton } from "../CopyButton";
 
@@ -32,6 +32,74 @@ export default function DashboardPage() {
 
   const [deletingAppId, setDeletingAppId] = useState<string | null>(null);
   const [appDeleteError, setAppDeleteError] = useState<string | null>(null);
+
+  const [expandedAppId, setExpandedAppId] = useState<string | null>(null);
+  const [releasesByApp, setReleasesByApp] = useState<Record<string, Release[]>>({});
+  const [releasesLoading, setReleasesLoading] = useState<string | null>(null);
+  const [releasesError, setReleasesError] = useState<Record<string, string>>({});
+  const [deletingReleaseKey, setDeletingReleaseKey] = useState<string | null>(null);
+
+  async function loadReleases(appId: string) {
+    setReleasesLoading(appId);
+    setReleasesError((prev) => ({ ...prev, [appId]: "" }));
+    try {
+      const res = await api.listReleases(appId);
+      setReleasesByApp((prev) => ({ ...prev, [appId]: res.releases }));
+    } catch (err) {
+      setReleasesError((prev) => ({
+        ...prev,
+        [appId]: err instanceof ApiError ? err.message : "Couldn't load releases",
+      }));
+    } finally {
+      setReleasesLoading((cur) => (cur === appId ? null : cur));
+    }
+  }
+
+  // One app's releases open at a time, loaded on demand — this is the same
+  // data `railcast list` prints, just fetched lazily here instead of on
+  // every dashboard load, since most apps have more releases than anyone
+  // wants to see by default.
+  function toggleReleases(appId: string) {
+    if (expandedAppId === appId) {
+      setExpandedAppId(null);
+      return;
+    }
+    setExpandedAppId(appId);
+    if (!releasesByApp[appId]) {
+      loadReleases(appId);
+    }
+  }
+
+  async function onDeleteRelease(appId: string, release: Release) {
+    if (
+      !window.confirm(
+        `Delete ${release.version} (build ${release.build_number}, ${release.channel})? Anyone still ` +
+          `on this exact build keeps running it, but Sparkle can no longer offer it as an update. ` +
+          `This can't be undone.`
+      )
+    ) {
+      return;
+    }
+    const key = `${appId}:${release.id}`;
+    setDeletingReleaseKey(key);
+    setReleasesError((prev) => ({ ...prev, [appId]: "" }));
+    try {
+      await api.deleteRelease(appId, release.id);
+      setReleasesByApp((prev) => ({
+        ...prev,
+        [appId]: (prev[appId] ?? []).filter((r) => r.id !== release.id),
+      }));
+    } catch (err) {
+      // Most likely a 409: "can't delete the only release on this channel"
+      // — surfaced as-is, it's already written for a human to read.
+      setReleasesError((prev) => ({
+        ...prev,
+        [appId]: err instanceof ApiError ? err.message : "Couldn't delete the release",
+      }));
+    } finally {
+      setDeletingReleaseKey((cur) => (cur === key ? null : cur));
+    }
+  }
 
   async function refresh() {
     const [appsRes, tokensRes] = await Promise.all([api.listApps(), api.listTokens()]);
@@ -102,6 +170,11 @@ export default function DashboardPage() {
     setAppDeleteError(null);
     try {
       await api.deleteApp(app.id);
+      setReleasesByApp((prev) => {
+        const { [app.id]: _drop, ...rest } = prev;
+        return rest;
+      });
+      if (expandedAppId === app.id) setExpandedAppId(null);
       await refresh();
     } catch (err) {
       setAppDeleteError(err instanceof ApiError ? err.message : "Couldn't delete the app");
@@ -177,37 +250,109 @@ export default function DashboardPage() {
     );
   };
 
-  const appRow = (app: App) => (
-    <div
-      key={app.id}
-      className="flex items-center justify-between border-b border-line pb-3 last:border-0 last:pb-0"
-    >
-      <div>
-        <p className="text-sm font-medium">{app.name || "(unnamed)"}</p>
-        <p className="mt-0.5 font-mono text-xs text-ink/50">
-          {api.base}/{app.id}/appcast.xml
-        </p>
-      </div>
-      <div className="flex items-center gap-4">
-        <a
-          href={`${api.base}/${app.id}/appcast.xml`}
-          target="_blank"
-          rel="noreferrer"
-          className="code-chip hover:border-accent hover:text-accent"
-        >
-          open feed
-        </a>
+  const releaseRow = (appId: string, r: Release) => {
+    const key = `${appId}:${r.id}`;
+    return (
+      <div
+        key={r.id}
+        className="flex items-center justify-between gap-4 border-b border-line pb-2 text-sm last:border-0 last:pb-0"
+      >
+        <div className="min-w-0 space-y-1">
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="font-mono text-ink">
+              {r.version} <span className="text-ink/40">· build {r.build_number}</span>
+            </span>
+            <span className="rounded bg-ink/5 px-1.5 py-0.5 text-[11px] font-medium uppercase tracking-wide text-ink/60">
+              {r.channel}
+            </span>
+            {r.critical === 1 && (
+              <span className="rounded bg-red-50 px-1.5 py-0.5 text-[11px] font-medium uppercase tracking-wide text-red-600">
+                critical
+              </span>
+            )}
+            {r.phased_rollout_interval ? (
+              <span className="rounded bg-accent-soft px-1.5 py-0.5 text-[11px] font-medium uppercase tracking-wide text-accent">
+                phased/{r.phased_rollout_interval}s
+              </span>
+            ) : null}
+          </div>
+          <p className="truncate text-xs text-ink/40" title={r.sha256}>
+            {formatDate(r.created_at)} · {(r.file_size / (1024 * 1024)).toFixed(1)} MB · sha256{" "}
+            {r.sha256.slice(0, 12)}…
+          </p>
+        </div>
         <button
           type="button"
-          onClick={() => onDeleteApp(app)}
-          disabled={deletingAppId === app.id}
-          className="text-xs text-red-600 hover:underline disabled:opacity-50"
+          onClick={() => onDeleteRelease(appId, r)}
+          disabled={deletingReleaseKey === key}
+          className="shrink-0 text-xs text-red-600 hover:underline disabled:opacity-50"
         >
-          {deletingAppId === app.id ? "Deleting…" : "Delete"}
+          {deletingReleaseKey === key ? "Deleting…" : "Delete"}
         </button>
       </div>
-    </div>
-  );
+    );
+  };
+
+  const appRow = (app: App) => {
+    const expanded = expandedAppId === app.id;
+    const releases = releasesByApp[app.id];
+
+    return (
+      <div key={app.id} className="border-b border-line pb-3 last:border-0 last:pb-0">
+        <div className="flex items-center justify-between">
+          <div>
+            <p className="text-sm font-medium">{app.name || "(unnamed)"}</p>
+            <p className="mt-0.5 font-mono text-xs text-ink/50">
+              {api.base}/{app.id}/appcast.xml
+            </p>
+          </div>
+          <div className="flex items-center gap-4">
+            <button
+              type="button"
+              onClick={() => toggleReleases(app.id)}
+              className="code-chip hover:border-accent hover:text-accent"
+            >
+              {expanded ? "hide releases" : "releases"}
+            </button>
+            <a
+              href={`${api.base}/${app.id}/appcast.xml`}
+              target="_blank"
+              rel="noreferrer"
+              className="code-chip hover:border-accent hover:text-accent"
+            >
+              open feed
+            </a>
+            <button
+              type="button"
+              onClick={() => onDeleteApp(app)}
+              disabled={deletingAppId === app.id}
+              className="text-xs text-red-600 hover:underline disabled:opacity-50"
+            >
+              {deletingAppId === app.id ? "Deleting…" : "Delete"}
+            </button>
+          </div>
+        </div>
+
+        {expanded && (
+          <div className="mt-3 rounded-lg border border-line bg-ink/[0.02] p-3">
+            {releasesError[app.id] && (
+              <p className="mb-2 text-xs text-red-600">{releasesError[app.id]}</p>
+            )}
+            {releasesLoading === app.id && !releases ? (
+              <p className="text-xs text-ink/50">Loading releases…</p>
+            ) : releases && releases.length === 0 ? (
+              <p className="text-xs text-ink/50">
+                No releases yet — <span className="font-mono">railcast publish</span> from the CLI to
+                add one.
+              </p>
+            ) : (
+              <div className="space-y-2">{releases?.map((r) => releaseRow(app.id, r))}</div>
+            )}
+          </div>
+        )}
+      </div>
+    );
+  };
 
   return (
     <main className="space-y-10">
@@ -225,8 +370,12 @@ export default function DashboardPage() {
         <h2 className="mb-3 text-sm font-semibold uppercase tracking-wide text-ink/50">
           1. Install the CLI
         </h2>
-        <div className="card">
+        <div className="card space-y-2">
           <CommandBlock command="curl -fsSL railcast.casablanque.com/install.sh | sh" />
+          <p className="text-xs text-ink/40">
+            Windows: <span className="font-mono">irm railcast.casablanque.com/install.ps1 | iex</span> in
+            PowerShell
+          </p>
         </div>
       </section>
 
@@ -340,13 +489,17 @@ export default function DashboardPage() {
             Run this from the same directory as <span className="font-mono">init</span> — it
             picks up the app and key automatically.
           </p>
-          <CommandBlock className="mt-3" command="railcast publish --file myapp-1.0.0.zip" />
+          <CommandBlock className="mt-3" command="railcast publish -f myapp-1.0.0.zip" />
         </div>
         <p className="mt-3 text-xs text-ink/50">
-          No <span className="font-mono">--version</span> or <span className="font-mono">--build</span>{" "}
-          needed — for a <span className="font-mono">.zip</span>, Railcast reads them straight from
-          the <span className="font-mono">.app</span>&apos;s own <span className="font-mono">Info.plist</span>
-          {" "}inside it. Updating later: bump the version in Xcode as usual and give the archive a{" "}
+          No <span className="font-mono">-v</span>/<span className="font-mono">--version</span> or{" "}
+          <span className="font-mono">-b</span>/<span className="font-mono">--build</span> needed —
+          for a <span className="font-mono">.zip</span> containing a signed <span className="font-mono">.app</span>,
+          Railcast reads them straight from its own <span className="font-mono">Info.plist</span>. Publishing
+          a <span className="font-mono">.dmg</span>/<span className="font-mono">.pkg</span>, or a
+          plain <span className="font-mono">.zip</span> with no <span className="font-mono">.app</span> inside?
+          Then there&apos;s nothing to detect, so pass both yourself:{" "}
+          <span className="font-mono">-v 1.2.0 -b 42</span>. Either way, updating later just means a{" "}
           <span className="font-mono">new filename</span> (like{" "}
           <span className="font-mono">myapp-1.0.1.zip</span>) — Railcast keeps every uploaded
           filename permanently attached to its release, so reusing one fails.
@@ -364,6 +517,13 @@ export default function DashboardPage() {
           {appList.length === 0 && (
             <p className="text-sm text-ink/50">
               Nothing yet — apps show up here after <span className="font-mono">railcast init</span>.
+            </p>
+          )}
+          {appList.length > 0 && (
+            <p className="text-xs text-ink/50">
+              Click <span className="font-mono">releases</span> on an app to see and delete its
+              published builds — the same list <span className="font-mono">railcast list</span> and{" "}
+              <span className="font-mono">railcast cleanup</span> use from the CLI.
             </p>
           )}
           {inlineApps.map(appRow)}

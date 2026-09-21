@@ -11,6 +11,12 @@ os=$(uname -s)
 case "$os" in
   Darwin) os="darwin" ;;
   Linux) os="linux" ;;
+  MINGW*|MSYS*|CYGWIN*)
+    echo "railcast install: you're on Windows — this script (install.sh) is for macOS/Linux." >&2
+    echo "Use the PowerShell installer instead:" >&2
+    echo "  irm https://railcast.casablanque.com/install.ps1 | iex" >&2
+    exit 1
+    ;;
   *)
     echo "railcast install: unsupported OS '$os' — download a binary manually from https://github.com/$REPO/releases" >&2
     exit 1

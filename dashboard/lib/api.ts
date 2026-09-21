@@ -71,6 +71,20 @@ export interface CreateTokenOptions {
   expires_in_days?: number; // omit for a token that never expires
 }
 
+export interface Release {
+  id: number;
+  channel: string;
+  version: string;
+  build_number: number;
+  file_key: string;
+  file_size: number;
+  sha256: string;
+  release_notes: string | null;
+  critical: number; // 0 | 1 — D1 has no native boolean
+  phased_rollout_interval: number | null;
+  created_at: number;
+}
+
 export const api = {
   base: API_BASE,
   me: () => request<Me>("/api/me"),
@@ -90,11 +104,6 @@ export const api = {
       body: JSON.stringify({ email, password }),
     }),
   listApps: () => request<{ apps: App[] }>("/api/apps"),
-  createApp: (name: string, signingPublicKey: string) =>
-    request<App>("/api/apps", {
-      method: "POST",
-      body: JSON.stringify({ name, signing_public_key: signingPublicKey }),
-    }),
   deleteApp: (id: string) => request<void>(`/api/apps/${id}`, { method: "DELETE" }),
   listTokens: () => request<{ tokens: TokenPreview[] }>("/api/tokens"),
   createToken: (options?: CreateTokenOptions) =>
@@ -106,4 +115,15 @@ export const api = {
       }
     ),
   deleteToken: (id: string) => request<void>(`/api/tokens/${id}`, { method: "DELETE" }),
+  // These two aren't under /api/ — they're the same routes `railcast list`
+  // and `railcast cleanup` hit from the CLI (see worker/src/index.ts),
+  // authenticated here by the dashboard's session cookie instead of a
+  // bearer token. Same data, same rules (e.g. deleting a channel's last
+  // release still 409s), no separate copy of anything.
+  listReleases: (appId: string) =>
+    request<{ app_id: string; app_name: string | null; history_limit: number; releases: Release[] }>(
+      `/${appId}/releases`
+    ),
+  deleteRelease: (appId: string, releaseId: number) =>
+    request<void>(`/${appId}/releases/${releaseId}`, { method: "DELETE" }),
 };

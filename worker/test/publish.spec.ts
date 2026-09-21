@@ -1190,6 +1190,27 @@ describe("GET /:appId/releases", () => {
     expect(res.status).toBe(200);
   });
 
+  it("a logged-in dashboard session (no bearer token at all) can list releases", async () => {
+    const { appId, userId } = await seedUserAppAndToken();
+    const cookie = await seedSession(userId);
+
+    const res = await SELF.fetch(`https://railcast.test/${appId}/releases`, {
+      headers: { Cookie: cookie },
+    });
+    expect(res.status).toBe(200);
+  });
+
+  it("a session cannot list releases for an app it doesn't own", async () => {
+    const { userId } = await seedUserAppAndToken();
+    const otherUserAppId = (await seedUserAppAndToken()).appId;
+    const cookie = await seedSession(userId);
+
+    const res = await SELF.fetch(`https://railcast.test/${otherUserAppId}/releases`, {
+      headers: { Cookie: cookie },
+    });
+    expect(res.status).toBe(403);
+  });
+
   it("lists releases across channels, newest build first within each channel", async () => {
     const { token, appId } = await seedUserAppAndToken();
 
@@ -1275,6 +1296,36 @@ describe("DELETE /:appId/releases/:id", () => {
       .bind(releases[0].id)
       .first();
     expect(stillThere).not.toBeNull();
+  });
+
+  it("a logged-in dashboard session (no bearer token) can delete a release", async () => {
+    const { token, appId, userId } = await seedUserAppAndToken();
+    // Two releases on the channel so the delete doesn't trip the
+    // "only release left" guard.
+    const older = await publishVersion(token, appId, "1.0.0", 1);
+    const { id } = await older.json<{ id: number }>();
+    await publishVersion(token, appId, "1.1.0", 2);
+
+    const cookie = await seedSession(userId);
+    const res = await SELF.fetch(`https://railcast.test/${appId}/releases/${id}`, {
+      method: "DELETE",
+      headers: { Cookie: cookie, Origin: "https://railcast.test" },
+    });
+    expect(res.status).toBe(204);
+  });
+
+  it("rejects a session-authenticated delete from a foreign Origin", async () => {
+    const { token, appId, userId } = await seedUserAppAndToken();
+    const older = await publishVersion(token, appId, "1.0.0", 1);
+    const { id } = await older.json<{ id: number }>();
+    await publishVersion(token, appId, "1.1.0", 2);
+
+    const cookie = await seedSession(userId);
+    const res = await SELF.fetch(`https://railcast.test/${appId}/releases/${id}`, {
+      method: "DELETE",
+      headers: { Cookie: cookie, Origin: "https://evil.example" },
+    });
+    expect(res.status).toBe(403);
   });
 
   it("404s an unknown release id", async () => {

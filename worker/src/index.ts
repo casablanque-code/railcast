@@ -987,14 +987,24 @@ async function handleApiDeleteApp(request: Request, env: Env, appId: string): Pr
   return new Response(null, { status: 204 });
 }
 
+// Accepts either the dashboard's session cookie or a CLI/API bearer token —
+// same "session-or-bearer" pattern as handleApiListApps/handleApiCreateApp/
+// handleApiDeleteApp, so the dashboard (browser, cookie session) and the
+// CLI (Bearer token) can call the exact same routes (releases list/delete,
+// and upload/versions for completeness) without either one needing a
+// separate code path or a separate copy of this app's data. A session is
+// treated as the full account — the per-app/per-scope restrictions below
+// only make sense for, and only apply to, a bearer token.
 async function requireAppOwnership(
   request: Request,
   env: Env,
   appId: string,
   requiredScope: "read" | "publish" = "publish"
 ): Promise<{ ok: true } | { ok: false; response: Response }> {
-  const identity = await getBearerIdentity(request, env);
-  if (!identity) {
+  const sessionUser = await getSessionUser(request, env);
+  const identity = sessionUser ? null : await getBearerIdentity(request, env);
+  const userId = sessionUser?.id ?? identity?.userId;
+  if (!userId) {
     return { ok: false, response: new Response("Unauthorized", { status: 401 }) };
   }
 
@@ -1012,30 +1022,36 @@ async function requireAppOwnership(
     // differs for a hit vs a miss.
     return { ok: false, response: new Response("App not found", { status: 404 }) };
   }
-  if (appRow.owner_user_id !== identity.userId) {
+  if (appRow.owner_user_id !== userId) {
     return { ok: false, response: new Response("Forbidden", { status: 403 }) };
   }
-  // A per-app token (appId set at creation — see handleApiCreateToken)
-  // must not be usable against any other app, even one the same account
-  // owns. This is the whole point of scoping: a leaked token only ever
-  // exposes the one app it was issued for. NULL means an old-style,
-  // account-wide token, kept working for backward compatibility.
-  if (identity.appId !== null && identity.appId !== appId) {
-    return {
-      ok: false,
-      response: new Response("This token is scoped to a different app", { status: 403 }),
-    };
-  }
-  // 'publish' is a superset of 'read' — a publish-scoped token can do
-  // anything a read-scoped one can, but not vice versa. Endpoints that
-  // mutate anything (upload, register a version, delete an app) require
-  // 'publish'; read-only endpoints (listing releases) pass "read" here and
-  // accept either scope.
-  if (requiredScope === "publish" && identity.scope !== "publish") {
-    return {
-      ok: false,
-      response: new Response("This token does not have publish scope", { status: 403 }),
-    };
+  // Everything below only means something for a bearer token — a session
+  // isn't scoped to one app or restricted to a scope, it's the account
+  // itself, same as every other /api/* endpoint the dashboard already
+  // calls with its cookie.
+  if (identity) {
+    // A per-app token (appId set at creation — see handleApiCreateToken)
+    // must not be usable against any other app, even one the same account
+    // owns. This is the whole point of scoping: a leaked token only ever
+    // exposes the one app it was issued for. NULL means an old-style,
+    // account-wide token, kept working for backward compatibility.
+    if (identity.appId !== null && identity.appId !== appId) {
+      return {
+        ok: false,
+        response: new Response("This token is scoped to a different app", { status: 403 }),
+      };
+    }
+    // 'publish' is a superset of 'read' — a publish-scoped token can do
+    // anything a read-scoped one can, but not vice versa. Endpoints that
+    // mutate anything (upload, register a version, delete a release)
+    // require 'publish'; read-only endpoints (listing releases) pass
+    // "read" here and accept either scope.
+    if (requiredScope === "publish" && identity.scope !== "publish") {
+      return {
+        ok: false,
+        response: new Response("This token does not have publish scope", { status: 403 }),
+      };
+    }
   }
 
   return { ok: true };
@@ -1368,6 +1384,15 @@ async function handleDeleteRelease(
 ): Promise<Response> {
   const auth = await requireAppOwnership(request, env, appId, "publish");
   if (!auth.ok) return auth.response;
+
+  // Now reachable from the dashboard's session cookie (not just a bearer
+  // token), so this needs the same Origin check as the other
+  // session-callable mutating endpoints (handleApiDeleteApp et al.) — a
+  // no-op for CLI/bearer callers, since hasValidOrigin passes through any
+  // request with no Origin header.
+  if (!hasValidOrigin(request, new URL(request.url).origin)) {
+    return jsonResponse({ error: "bad_origin" }, 403);
+  }
 
   const id = Number(releaseId);
   if (!Number.isInteger(id) || id <= 0) {

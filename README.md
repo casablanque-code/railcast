@@ -12,6 +12,9 @@ Railcast is that missing piece. Push a build, get back a signed, hosted feed. No
 - EdDSA signing built in — every release is verified before Sparkle installs it
 - Release channels (stable / beta) out of the box
 - A CLI that turns "build → signed, hosted release" into one command
+- A web dashboard that mirrors the CLI: same apps, same release history, same delete — pick
+  whichever is more convenient for a given moment (`railcast list`/`railcast cleanup`, or the
+  "releases" panel on each app in the dashboard)
 
 ## Who this is for
 
@@ -24,6 +27,10 @@ Solo and small-team macOS developers shipping a native app who want Sparkle's up
 3. **Install the CLI**:
    ```bash
    curl -fsSL railcast.casablanque.com/install.sh | sh
+   ```
+   Windows (PowerShell):
+   ```powershell
+   irm railcast.casablanque.com/install.ps1 | iex
    ```
 4. **Set your token for the session** (optional, but every command below assumes it):
    ```bash
@@ -47,13 +54,23 @@ This generates an Ed25519 signing key, registers a new app on the server, and sa
 Then publish the first build:
 
 ```bash
-railcast publish --file testapp-1.0.0.zip
+railcast publish -f testapp-1.0.0.zip
 ```
 
-`--version` and `--build` are both optional for a `.zip` — Railcast reads `CFBundleShortVersionString` and `CFBundleVersion` straight out of the `.app`'s own `Info.plist` inside the archive, so there's nothing to type or keep in sync by hand. It's printed back so you can double check:
+`-v`/`--version` and `-b`/`--build` are both optional for a `.zip` — Railcast reads
+`CFBundleShortVersionString` and `CFBundleVersion` straight out of the `.app`'s own `Info.plist`
+inside the archive, so there's nothing to type or keep in sync by hand. Before touching the
+network, `publish` prints exactly what it resolved and where each value came from, so you can
+double check:
 ```
-Detected version from Info.plist: 1.0.0
-Detected build number from Info.plist: 42
+┌─ Publishing plan ──────────────────────────
+│ file:    testapp-1.0.0.zip
+│ app:     a1b2c3d4e5f6
+│ channel: stable
+│ version: 1.0.0 (detected from Info.plist)
+│ build:   42 (detected from Info.plist)
+│ sha256:  9f3a...
+└────────────────────────────────────────────
 ```
 
 ## Updating an existing app
@@ -61,7 +78,7 @@ Detected build number from Info.plist: 42
 From the same directory (so `.railcast.json` is picked up):
 
 ```bash
-railcast publish --file testapp-2.0.0.zip
+railcast publish -f testapp-2.0.0.zip
 ```
 
 Bump `CFBundleShortVersionString`/`CFBundleVersion` in Xcode like you normally would before archiving — Railcast picks up whatever's actually in the zip, every time. There's no separate number to remember to bump on the Railcast side.
@@ -72,16 +89,17 @@ Bump `CFBundleShortVersionString`/`CFBundleVersion` in Xcode like you normally w
 
 Optional flags for either a first publish or an update:
 
-| Flag | Purpose |
-|---|---|
-| `--build <n>` | Explicit build number, overriding what's detected from the archive (or Railcast's own auto-assign, if detection isn't possible). Must be greater than the channel's current latest — see Gotchas. |
-| `--channel beta` | Publishes to a separate channel instead of `stable`. Build-number ordering is tracked per channel, independently. |
-| `--notes "…"` | Plain text or Markdown release notes, shown in Sparkle's update dialog. |
-| `--notes-file path` | Same, read from a file — overrides `--notes` if both are given. |
-| `--critical` | Marks the update as critical (`sparkle:criticalUpdate`) — Sparkle won't let the user postpone it. |
-| `--phased-rollout <seconds>` | Staggers the rollout to installed clients (`sparkle:phasedRolloutInterval`). `0` (default) disables it. |
+| Flag | Short | Purpose |
+|---|---|---|
+| `--build <n>` | `-b` | Explicit build number, overriding what's detected from the archive (or Railcast's own auto-assign, if detection isn't possible). Must be greater than the channel's current latest — see Gotchas. |
+| `--channel beta` | `-c` | Publishes to a separate channel instead of `stable`. Build-number ordering is tracked per channel, independently. |
+| `--notes "…"` | | Plain text or Markdown release notes, shown in Sparkle's update dialog. |
+| `--notes-file path` | | Same, read from a file — overrides `--notes` if both are given. |
+| `--critical` | | Marks the update as critical (`sparkle:criticalUpdate`) — Sparkle won't let the user postpone it. |
+| `--phased-rollout <seconds>` | | Staggers the rollout to installed clients (`sparkle:phasedRolloutInterval`). `0` (default) disables it. |
 
-Run `railcast publish --help` any time for the full, current flag list.
+`--file`/`-f`, `--version`/`-v`, `--app`/`-a`, `--key`/`-k`, and `--token`/`-t` all have the same
+short forms shown earlier. Run `railcast publish --help` any time for the full, current flag list.
 
 ## Gotchas
 
@@ -92,7 +110,11 @@ Run `railcast publish --help` any time for the full, current flag list.
 - **`--app` at `init` time is just a local label** — it picks the default key filename and shows up in your terminal, but the id Railcast actually uses (in the feed URL, in `--app` for `publish`) is a separate, server-generated id written into `.railcast.json`. You don't need it to be unique across all Railcast users.
 - **Publishing from a different machine or directory** (no local `.railcast.json`/key) means passing `--app <id>` and `--key <path>` explicitly to `publish` — copy both from wherever `init` originally ran. Don't run `init` again for an app you already have; that creates a brand-new app with a brand-new key, not a continuation of the old one.
 - **Beta channel feeds are unlisted, not private.** `railcast init` prints a feed URL like `.../appcast.xml?channel=beta&token=<beta_token>` — anyone with that URL can read the beta feed, there's no per-user auth on it. Treat the URL itself as the secret; it's not shown again after `init`, but you can find the current one on the dashboard.
-- **Tokens are account-wide**, not per-app — one token can publish to every app under your account. Revoke a leaked token from the dashboard immediately; publishing continues to work for anyone with a different valid token.
+- **Tokens can be account-wide or scoped to one app, and to publish-or-read**, set at creation
+  time (dashboard: the "Get a token" form; CLI: not creatable from the CLI itself, only from the
+  dashboard). A leaked token only ever exposes what it was actually scoped to — prefer a
+  narrowly-scoped one for CI. Revoke it from the dashboard immediately if it leaks; publishing
+  continues to work for anyone with a different valid token.
 - **Self-hosting**: override the API base URL with `--base-url` or `$RAILCAST_BASE_URL` if you're not using the hosted instance.
 
 ## Status
