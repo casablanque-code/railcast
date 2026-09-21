@@ -49,7 +49,9 @@ func cmdList(args []string) {
 
 	fs := flag.NewFlagSet("list", flag.ExitOnError)
 	appID := fs.String("app", appDefault, "only list this app's releases — defaults to .railcast.json in this directory if present, otherwise every app the token can see")
+	fs.StringVar(appID, "a", appDefault, "shorthand for --app")
 	token := fs.String("token", "", "API token (defaults to $RAILCAST_TOKEN, then a token saved by 'railcast init' in this directory)")
+	fs.StringVar(token, "t", "", "shorthand for --token")
 	baseURL := fs.String("base-url", "", "Railcast API base URL (default: "+defaultBaseURL+", override with $RAILCAST_BASE_URL)")
 	asJSON := fs.Bool("json", false, "print raw JSON instead of a formatted table")
 	fs.Parse(args)

@@ -33,7 +33,9 @@ func cmdCleanup(args []string) {
 
 	fs := flag.NewFlagSet("cleanup", flag.ExitOnError)
 	appID := fs.String("app", appDefault, "the app to clean up — defaults to .railcast.json in this directory")
+	fs.StringVar(appID, "a", appDefault, "shorthand for --app")
 	token := fs.String("token", "", "API token (defaults to $RAILCAST_TOKEN, then a token saved by 'railcast init' in this directory)")
+	fs.StringVar(token, "t", "", "shorthand for --token")
 	baseURL := fs.String("base-url", "", "Railcast API base URL (default: "+defaultBaseURL+", override with $RAILCAST_BASE_URL)")
 	yes := fs.Bool("yes", false, "delete without prompting for confirmation (for scripts/CI)")
 	dryRun := fs.Bool("dry-run", false, "only show what would be deleted; never deletes, never prompts")

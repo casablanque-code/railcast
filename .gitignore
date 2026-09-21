@@ -7,3 +7,4 @@ railcast
 *.patch
 *.zip
 *.diff
+.railcast.token

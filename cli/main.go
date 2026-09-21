@@ -43,18 +43,34 @@ func main() {
 func printHelp() {
 	fmt.Println(`railcast — hosted appcast feeds and update delivery for Sparkle
 
+The whole flow, start to finish:
+  1. railcast init --app <name> --token <token>     (once per app)
+  2. railcast publish -f <path>                      (every release)
+
 Usage:
   railcast init --app <name> --token <token>
-      Create an app and generate its signing key. Start here.
+      Create an app and generate its signing key. Start here — this writes
+      .railcast.json and .railcast.token so every later command in this
+      directory just works with no flags.
 
-  railcast publish --file <path> --token <token>
-      Sign and publish a build. Reads --app/--key from .railcast.json
-      automatically if you run it from the same directory as 'init'.
-      --version and --build are optional for .zip archives — read straight
-      from the .app's own Info.plist (CFBundleShortVersionString /
-      CFBundleVersion) inside the zip, so there's nothing to type or keep
-      in sync by hand. Pass them explicitly to override, or for non-.zip
-      archives (.dmg/.pkg) where this can't be auto-detected.
+  railcast publish -f <path>
+      Sign and publish a build. --app/--key/--token are read from
+      .railcast.json / .railcast.token automatically if you ran 'init' in
+      this directory — you normally only need -f.
+
+      Two situations, handled differently:
+        • Your archive is a .zip containing a signed .app bundle
+          → -v/--version and -b/--build are detected automatically from
+            the bundle's own Info.plist. Don't pass them; just:
+              railcast publish -f MyApp-1.2.0.zip
+        • Your archive is anything else (.dmg/.pkg, or a plain .zip with
+          no .app bundle inside)
+          → nothing to detect, so you must pass -v and -b yourself:
+              railcast publish -f MyApp.pkg -v 1.2.0 -b 42
+      Either way, 'railcast publish' prints a "Publishing plan" box before
+      touching the network, showing every value it's about to use and
+      where each one came from — check that first if anything looks off.
+
       Add --critical or --phased-rollout <seconds> for Sparkle's staged
       rollout controls — see 'railcast publish --help' for the full list.
 
@@ -74,6 +90,9 @@ Usage:
   railcast keygen        Generate a signing key without creating an app
   railcast version        Print the CLI version
   railcast help           Show this message
+
+Most publish flags have a one-letter shorthand: -f (--file), -v (--version),
+-b (--build), -a (--app), -k (--key), -t (--token), -c (--channel).
 
 Every command needs a token — get one at https://railcast.casablanque.com/dashboard
 'railcast init' saves it to .railcast.token (gitignored) in this directory, so

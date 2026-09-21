@@ -28,9 +28,12 @@ func cmdInit(args []string) {
 	// still what picks the default key filename and shows up in your
 	// terminal; it does NOT need to be unique across all Railcast users.
 	appName := fs.String("app", "", "a name for this app, e.g. myapp (required, local label only)")
+	fs.StringVar(appName, "a", "", "shorthand for --app")
 	token := fs.String("token", "", "API token from the dashboard (defaults to $RAILCAST_TOKEN, then a token saved by an earlier 'railcast init' in this directory)")
+	fs.StringVar(token, "t", "", "shorthand for --token")
 	baseURL := fs.String("base-url", "", "Railcast API base URL (default: "+defaultBaseURL+", override with $RAILCAST_BASE_URL)")
 	keyPath := fs.String("key", "", "where to save the private key (default: ./<app>.key)")
+	fs.StringVar(keyPath, "k", "", "shorthand for --key")
 	initialBuild := fs.Int("initial-build", 0, "if this app already shipped builds outside Railcast (e.g. your own CFBundleVersion counter), set this to the highest one — auto-assigned build numbers will start above it, avoiding a number that's <= a build already installed somewhere")
 	noSaveToken := fs.Bool("no-save-token", false, "don't write the token to .railcast.token — fall back to passing --token/$RAILCAST_TOKEN to every command instead")
 	fs.Parse(args)
