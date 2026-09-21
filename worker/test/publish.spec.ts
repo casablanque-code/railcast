@@ -1337,6 +1337,19 @@ describe("DELETE /:appId/releases/:id", () => {
     expect(res.status).toBe(404);
   });
 
+  it("a session cannot delete the only remaining release on a channel (409)", async () => {
+    const { token, appId, userId } = await seedUserAppAndToken();
+    const only = await publishVersion(token, appId, "1.0.0", 1);
+    const { id } = await only.json<{ id: number }>();
+    const cookie = await seedSession(userId);
+
+    const res = await SELF.fetch(`https://railcast.test/${appId}/releases/${id}`, {
+      method: "DELETE",
+      headers: { Cookie: cookie, Origin: "https://railcast.test" },
+    });
+    expect(res.status).toBe(409);
+  });
+
   it("400s a non-numeric release id", async () => {
     const { token, appId } = await seedUserAppAndToken();
     const res = await SELF.fetch(`https://railcast.test/${appId}/releases/not-a-number`, {
@@ -1569,6 +1582,45 @@ describe("GET /api/apps with a bearer token", () => {
 
   it("401s without a session or a token", async () => {
     const res = await SELF.fetch("https://railcast.test/api/apps");
+    expect(res.status).toBe(401);
+  });
+});
+
+// Narrowing check: only GET/DELETE on a release accept the dashboard
+// session (see requireAppOwnership's allowSession opt-in). Upload and
+// version registration are CLI/CI actions and must stay bearer-only, even
+// for the account's own logged-in session — otherwise an XSS on the
+// dashboard could publish a build, not just manage existing releases.
+describe("upload and version registration stay bearer-only", () => {
+  it("401s an upload authenticated only with a session cookie", async () => {
+    const { appId, userId } = await seedUserAppAndToken();
+    const cookie = await seedSession(userId);
+
+    const res = await SELF.fetch(`https://railcast.test/${appId}/upload/x.zip`, {
+      method: "PUT",
+      headers: { Cookie: cookie, "X-Sha256": await sha256Hex("x") },
+      body: "x",
+    });
+    expect(res.status).toBe(401);
+  });
+
+  it("401s registering a version authenticated only with a session cookie", async () => {
+    const { token, appId, userId } = await seedUserAppAndToken();
+    const { file_key, file_size, sha256 } = await uploadBuild(token, appId, "x.zip", "x");
+    const cookie = await seedSession(userId);
+
+    const res = await SELF.fetch(`https://railcast.test/${appId}/versions`, {
+      method: "POST",
+      headers: { Cookie: cookie, "Content-Type": "application/json" },
+      body: JSON.stringify({
+        version: "1.0.0",
+        build_number: 1,
+        file_key,
+        file_size,
+        sha256,
+        signature: "sig",
+      }),
+    });
     expect(res.status).toBe(401);
   });
 });

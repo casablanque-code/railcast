@@ -987,21 +987,22 @@ async function handleApiDeleteApp(request: Request, env: Env, appId: string): Pr
   return new Response(null, { status: 204 });
 }
 
-// Accepts either the dashboard's session cookie or a CLI/API bearer token —
-// same "session-or-bearer" pattern as handleApiListApps/handleApiCreateApp/
-// handleApiDeleteApp, so the dashboard (browser, cookie session) and the
-// CLI (Bearer token) can call the exact same routes (releases list/delete,
-// and upload/versions for completeness) without either one needing a
-// separate code path or a separate copy of this app's data. A session is
-// treated as the full account — the per-app/per-scope restrictions below
-// only make sense for, and only apply to, a bearer token.
+// Bearer-only by default (upload and version registration stay this way —
+// those are CLI/CI actions, never something the browser session should be
+// able to trigger). The dashboard's releases panel opts in with
+// allowSession, since GET/DELETE on a release is exactly what "browse and
+// manage releases from the web" needs and nothing more — a session is
+// treated as the full account (like every other /api/* route the dashboard
+// already calls with its cookie), so the per-app/per-scope restrictions
+// below only apply to a bearer token.
 async function requireAppOwnership(
   request: Request,
   env: Env,
   appId: string,
-  requiredScope: "read" | "publish" = "publish"
+  requiredScope: "read" | "publish" = "publish",
+  opts: { allowSession?: boolean } = {}
 ): Promise<{ ok: true } | { ok: false; response: Response }> {
-  const sessionUser = await getSessionUser(request, env);
+  const sessionUser = opts.allowSession ? await getSessionUser(request, env) : null;
   const identity = sessionUser ? null : await getBearerIdentity(request, env);
   const userId = sessionUser?.id ?? identity?.userId;
   if (!userId) {
@@ -1341,7 +1342,7 @@ interface ReleaseRow {
 // either a "read" or "publish" scoped token can call it (requireAppOwnership
 // defaults to requiring "publish" — pass "read" explicitly here).
 async function handleListReleases(request: Request, env: Env, appId: string): Promise<Response> {
-  const auth = await requireAppOwnership(request, env, appId, "read");
+  const auth = await requireAppOwnership(request, env, appId, "read", { allowSession: true });
   if (!auth.ok) return auth.response;
 
   const appRow = await env.DB.prepare(`SELECT name FROM apps WHERE id = ?`)
@@ -1382,7 +1383,7 @@ async function handleDeleteRelease(
   appId: string,
   releaseId: string
 ): Promise<Response> {
-  const auth = await requireAppOwnership(request, env, appId, "publish");
+  const auth = await requireAppOwnership(request, env, appId, "publish", { allowSession: true });
   if (!auth.ok) return auth.response;
 
   // Now reachable from the dashboard's session cookie (not just a bearer
