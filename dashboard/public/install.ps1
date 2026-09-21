@@ -31,6 +31,7 @@ if (-not $tag) {
 }
 
 $url = "https://github.com/$Repo/releases/download/$tag/railcast-$tag-windows-$arch.exe"
+$shaUrl = "$url.sha256"
 Write-Host "Downloading railcast $tag for windows/$arch..."
 
 New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
@@ -42,9 +43,33 @@ try {
     Write-Error "railcast install: couldn't download $url — that release may not include a windows/$arch build."
     exit 1
 }
+
+# Every release binary ships with a matching *.sha256 file (see
+# .github/workflows/release.yml) — verify against it before this ever gets
+# moved onto PATH, so a corrupted download or a tampered mirror doesn't get
+# silently installed.
+$tmpShaPath = "$tmpPath.sha256"
+try {
+    Invoke-WebRequest -UseBasicParsing -Uri $shaUrl -OutFile $tmpShaPath
+} catch {
+    Remove-Item -Force -ErrorAction SilentlyContinue $tmpPath, $tmpShaPath
+    Write-Error "railcast install: couldn't download $shaUrl to verify the binary — refusing to install an unverified download."
+    exit 1
+}
+
+$expectedSha = ((Get-Content $tmpShaPath -Raw).Trim() -split '\s+')[0]
+$actualSha = (Get-FileHash -Algorithm SHA256 -Path $tmpPath).Hash
+
+if (-not $expectedSha -or $expectedSha.ToLower() -ne $actualSha.ToLower()) {
+    Write-Error "railcast install: checksum mismatch for $url`n  expected: $expectedSha`n  got:      $actualSha`nThe download may be corrupted, or the release/mirror may have been tampered with. Not installing."
+    Remove-Item -Force -ErrorAction SilentlyContinue $tmpPath, $tmpShaPath
+    exit 1
+}
+Remove-Item -Force -ErrorAction SilentlyContinue $tmpShaPath
+
 Move-Item -Force $tmpPath $BinPath
 
-Write-Host "Installed to $BinPath"
+Write-Host "Installed to $BinPath (sha256 verified)"
 
 # Persist to the user's PATH (not just this session) the same way install.sh
 # edits .zshrc/.bashrc — but idempotently, so re-running this doesn't pile up

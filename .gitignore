@@ -8,3 +8,6 @@ railcast
 *.zip
 *.diff
 .railcast.token
+.railcast.json
+*.sh
+*.ps1

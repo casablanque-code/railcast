@@ -41,6 +41,7 @@ if [ -z "$tag" ]; then
 fi
 
 url="https://github.com/$REPO/releases/download/$tag/railcast-$tag-$os-$arch"
+sha_url="$url.sha256"
 echo "Downloading railcast $tag for $os/$arch..."
 
 mkdir -p "$INSTALL_DIR"
@@ -50,10 +51,43 @@ if ! curl -fsSL "$url" -o "$tmp_path"; then
   rm -f "$tmp_path"
   exit 1
 fi
+
+# Every release binary is published with a matching *.sha256 file (see
+# .github/workflows/release.yml) — verify the download against it before
+# anything gets chmod +x'd and put on PATH, so a corrupted download or a
+# tampered mirror doesn't get silently installed.
+tmp_sha_path="$tmp_path.sha256"
+if ! curl -fsSL "$sha_url" -o "$tmp_sha_path"; then
+  echo "railcast install: couldn't download $sha_url to verify the binary — refusing to install an unverified download." >&2
+  rm -f "$tmp_path" "$tmp_sha_path"
+  exit 1
+fi
+
+expected_sha=$(awk '{print $1}' "$tmp_sha_path")
+if command -v sha256sum >/dev/null 2>&1; then
+  actual_sha=$(sha256sum "$tmp_path" | awk '{print $1}')
+elif command -v shasum >/dev/null 2>&1; then
+  actual_sha=$(shasum -a 256 "$tmp_path" | awk '{print $1}')
+else
+  echo "railcast install: neither sha256sum nor shasum is available — can't verify the download, refusing to install." >&2
+  rm -f "$tmp_path" "$tmp_sha_path"
+  exit 1
+fi
+
+if [ -z "$expected_sha" ] || [ "$expected_sha" != "$actual_sha" ]; then
+  echo "railcast install: checksum mismatch for $url" >&2
+  echo "  expected: ${expected_sha:-<empty>}" >&2
+  echo "  got:      $actual_sha" >&2
+  echo "The download may be corrupted, or the release/mirror may have been tampered with. Not installing." >&2
+  rm -f "$tmp_path" "$tmp_sha_path"
+  exit 1
+fi
+rm -f "$tmp_sha_path"
+
 chmod +x "$tmp_path"
 mv "$tmp_path" "$BIN_PATH"
 
-echo "Installed to $BIN_PATH"
+echo "Installed to $BIN_PATH (sha256 verified)"
 
 path_line="export PATH=\"$INSTALL_DIR:\$PATH\""
 added=0
