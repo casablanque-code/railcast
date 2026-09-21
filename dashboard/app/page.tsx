@@ -57,10 +57,6 @@ export default function LandingPage() {
         </p>
         <div className="mt-4 space-y-2">
           <CommandBlock command="curl -fsSL railcast.casablanque.com/install.sh | sh" />
-          <p className="text-xs text-ink/40">
-            Windows: <span className="font-mono">irm railcast.casablanque.com/install.ps1 | iex</span> in
-            PowerShell
-          </p>
           <CommandBlock command="railcast init --app myapp --token <token>" />
           <CommandBlock command="railcast publish -f MyApp-1.0.0.zip" />
         </div>

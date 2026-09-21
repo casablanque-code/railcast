@@ -22,8 +22,6 @@ jobs:
             goarch: amd64
           - goos: linux
             goarch: arm64
-          - goos: windows
-            goarch: amd64
     steps:
       - uses: actions/checkout@v4
 
@@ -39,9 +37,7 @@ jobs:
           GOARCH: ${{ matrix.goarch }}
           CGO_ENABLED: "0"
         run: |
-          ext=""
-          if [ "$GOOS" = "windows" ]; then ext=".exe"; fi
-          out="railcast-${{ github.ref_name }}-${GOOS}-${GOARCH}${ext}"
+          out="railcast-${{ github.ref_name }}-${GOOS}-${GOARCH}"
           go build -ldflags "-s -w -X main.version=${{ github.ref_name }}" -o "$out" .
           shasum -a 256 "$out" > "$out.sha256"
 

@@ -372,10 +372,6 @@ export default function DashboardPage() {
         </h2>
         <div className="card space-y-2">
           <CommandBlock command="curl -fsSL railcast.casablanque.com/install.sh | sh" />
-          <p className="text-xs text-ink/40">
-            Windows: <span className="font-mono">irm railcast.casablanque.com/install.ps1 | iex</span> in
-            PowerShell
-          </p>
         </div>
       </section>
 

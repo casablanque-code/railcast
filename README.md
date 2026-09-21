@@ -28,13 +28,9 @@ Solo and small-team macOS developers shipping a native app who want Sparkle's up
    ```bash
    curl -fsSL railcast.casablanque.com/install.sh | sh
    ```
-   Windows (PowerShell):
-   ```powershell
-   irm railcast.casablanque.com/install.ps1 | iex
-   ```
-   Both scripts verify the download's sha256 against the checksum published alongside every
-   release binary before installing anything — a corrupted download or a tampered mirror gets
-   rejected, not silently installed.
+   It verifies the download's sha256 against the checksum published alongside every release
+   binary before installing anything — a corrupted download or a tampered mirror gets rejected,
+   not silently installed.
 4. **Set your token for the session** (optional, but every command below assumes it):
    ```bash
    export RAILCAST_TOKEN=<token from step 2>
