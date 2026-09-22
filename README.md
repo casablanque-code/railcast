@@ -121,8 +121,8 @@ short forms shown earlier. Run `railcast publish --help` any time for the full, 
 In active development. Sparkle support is live; WinSparkle and Velopack (Windows / .NET) are
 planned next.
 
-Free and open source under [AGPL-3.0](./LICENSE) — self-host it, or use the hosted instance at
-[railcast.casablanque.com](https://railcast.casablanque.com). No account gating, no paid tier.
-Donations are welcome but never required — see the site for links.
+Free and open source under [AGPL-3.0](./LICENSE) — [self-host it](./SELF-HOSTING.md), or use the
+hosted instance at [railcast.casablanque.com](https://railcast.casablanque.com). No account
+gating, no paid tier. Donations are welcome but never required — see the site for links.
 
 Questions or bugs: **casablanque@proton.me**

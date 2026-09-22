@@ -16,6 +16,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   web and the CLI never disagree.
 - `install.sh` now verifies the downloaded binary's sha256 against the checksum published
   alongside every release before installing anything.
+- Per-account caps on apps (50) and API tokens (100), to bound the worst case from a
+  compromised or abusive account rather than as a real usage limit.
+- Baseline security response headers on every response: CSP, `X-Frame-Options: DENY`,
+  `X-Content-Type-Options: nosniff`, `Referrer-Policy`, `Permissions-Policy`, and HSTS
+  scoped to the app's own host.
+- `SELF-HOSTING.md` — a full walkthrough for running your own instance (D1, R2, Resend,
+  deploying the Worker + dashboard, building your own CLI binaries).
 
 ### Changed
 - The dashboard's session cookie can now authenticate `GET`/`DELETE` on release routes
@@ -36,6 +43,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Tightened the release-route session auth above: it had briefly also accepted the
   session cookie on upload and version registration, which would have let a
   hypothetical XSS on the dashboard publish a build, not just manage existing releases.
+- Bumped `sharp` (transitive, via `wrangler`'s dev tooling) and `postcss` (transitive,
+  via `next`'s build pipeline) past 4 high-severity advisories, via npm `overrides` —
+  neither package ships to a deployed Worker or a browser, but both are now patched.
+  `npm audit`: 0 vulnerabilities in both `worker/` and `dashboard/`.
 
 ## [0.8.2] - 2026-09-21
 ### Changed
