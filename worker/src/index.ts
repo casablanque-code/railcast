@@ -1541,8 +1541,43 @@ async function handleAppcast(request: Request, env: Env, appId: string): Promise
 
 // ---------- Router ----------
 
+// Applied to every response, dashboard HTML included. CSP keeps
+// script/style loads same-origin; Next's static export ships its RSC
+// hydration payload as inline <script> tags with no server-side templating
+// step to attach a nonce to, so 'unsafe-inline' is needed for script-src to
+// avoid breaking the dashboard — this still blocks an XSS payload from
+// pulling in an external script, which is the attack this is mainly for.
+// frame-ancestors/X-Frame-Options stop the dashboard (session cookie) from
+// being framed for clickjacking.
+const SECURITY_HEADERS: Record<string, string> = {
+  "Content-Security-Policy":
+    "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; " +
+    "img-src 'self' data:; connect-src 'self'; base-uri 'self'; form-action 'self'; " +
+    "frame-ancestors 'none'; object-src 'none'",
+  "X-Frame-Options": "DENY",
+  "X-Content-Type-Options": "nosniff",
+  "Referrer-Policy": "strict-origin-when-cross-origin",
+  "Permissions-Policy": "camera=(), microphone=(), geolocation=(), payment=()",
+  // Scoped to this host (and any subdomain of it), not the whole apex
+  // domain, so it can't affect other, unrelated *.casablanque.com sites.
+  "Strict-Transport-Security": "max-age=15552000; includeSubDomains",
+};
+
+function withSecurityHeaders(response: Response): Response {
+  const headers = new Headers(response.headers);
+  for (const [name, value] of Object.entries(SECURITY_HEADERS)) {
+    headers.set(name, value);
+  }
+  return new Response(response.body, { status: response.status, statusText: response.statusText, headers });
+}
+
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
+    return withSecurityHeaders(await route(request, env));
+  },
+};
+
+async function route(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
 
     // Redirect a logged-in visitor straight to /dashboard before any landing
@@ -1635,5 +1670,4 @@ export default {
     }
 
     return new Response("Railcast API is alive", { status: 200 });
-  },
-};
+}

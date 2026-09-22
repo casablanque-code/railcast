@@ -627,3 +627,37 @@ describe("POST /api/apps", () => {
     expect(res.status).toBe(201);
   });
 });
+
+describe("security response headers", () => {
+  it("are present on a JSON API response", async () => {
+    const res = await SELF.fetch("https://railcast.test/api/me");
+    expect(res.status).toBe(401);
+    expect(res.headers.get("Content-Security-Policy")).toContain("default-src 'self'");
+    expect(res.headers.get("X-Frame-Options")).toBe("DENY");
+    expect(res.headers.get("X-Content-Type-Options")).toBe("nosniff");
+    expect(res.headers.get("Referrer-Policy")).toBe("strict-origin-when-cross-origin");
+    expect(res.headers.get("Strict-Transport-Security")).toContain("max-age=");
+  });
+
+  it("survive the redirect from / to /dashboard for a logged-in session", async () => {
+    const userId = crypto.randomUUID();
+    const sessionId = "session-" + crypto.randomUUID();
+    const now = Math.floor(Date.now() / 1000);
+    await env.DB.prepare(`INSERT INTO users (id, email, created_at) VALUES (?, ?, ?)`)
+      .bind(userId, `${crypto.randomUUID()}@example.com`, now)
+      .run();
+    await env.DB.prepare(
+      `INSERT INTO sessions (id, user_id, expires_at, created_at) VALUES (?, ?, ?, ?)`
+    )
+      .bind(await sha256Hex(sessionId), userId, now + 3600, now)
+      .run();
+
+    const res = await SELF.fetch("https://railcast.test/", {
+      headers: { Cookie: `session=${sessionId}` },
+      redirect: "manual",
+    });
+    expect(res.status).toBe(302);
+    expect(res.headers.get("Location")).toBe("/dashboard");
+    expect(res.headers.get("X-Frame-Options")).toBe("DENY");
+  });
+});
