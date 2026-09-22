@@ -901,6 +901,28 @@ describe("per-app token scoping", () => {
 });
 
 describe("POST /api/tokens", () => {
+  it("refuses to create a 101st token once the per-account cap is hit", async () => {
+    const { userId } = await seedUserAppAndToken();
+    const cookie = await seedSession(userId);
+    const now = Math.floor(Date.now() / 1000);
+    // The one from seedUserAppAndToken counts too, so 99 more reaches 100.
+    for (let i = 0; i < 99; i++) {
+      await env.DB.prepare(
+        `INSERT INTO api_tokens (id, token, user_id, created_at) VALUES (?, ?, ?, ?)`
+      )
+        .bind(crypto.randomUUID(), await sha256Hex(`capped-token-${i}`), userId, now)
+        .run();
+    }
+
+    const res = await SELF.fetch("https://railcast.test/api/tokens", {
+      method: "POST",
+      headers: { Cookie: cookie },
+    });
+    expect(res.status).toBe(403);
+    const body = await res.json<{ error: string }>();
+    expect(body.error).toBe("limit_reached");
+  });
+
   it("creates an account-wide token when app_id is omitted", async () => {
     const { userId } = await seedUserAppAndToken();
     const cookie = await seedSession(userId);

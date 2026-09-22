@@ -736,6 +736,14 @@ async function handleApiListApps(request: Request, env: Env): Promise<Response> 
   return jsonResponse({ apps: results ?? [] });
 }
 
+// Per-account caps on apps and tokens. Not about legitimate usage — a real
+// user is nowhere near either number — this exists to bound the worst case
+// from a single compromised or abusive account hammering D1/R2 via
+// `railcast init` or token generation in a loop. Deleting frees up the
+// slot, same as everywhere else in this API.
+const MAX_APPS_PER_ACCOUNT = 50;
+const MAX_TOKENS_PER_ACCOUNT = 100;
+
 async function handleApiCreateApp(request: Request, env: Env): Promise<Response> {
   const sessionUser = await getSessionUser(request, env);
   const identity = sessionUser ? null : await getBearerIdentity(request, env);
@@ -775,6 +783,21 @@ async function handleApiCreateApp(request: Request, env: Env): Promise<Response>
     return jsonResponse(
       { error: "invalid_input", message: "name and signing_public_key are required" },
       400
+    );
+  }
+
+  const { count: appCount } = (await env.DB.prepare(
+    `SELECT COUNT(*) as count FROM apps WHERE owner_user_id = ?`
+  )
+    .bind(user.id)
+    .first<{ count: number }>())!;
+  if (appCount >= MAX_APPS_PER_ACCOUNT) {
+    return jsonResponse(
+      {
+        error: "limit_reached",
+        message: `Accounts are limited to ${MAX_APPS_PER_ACCOUNT} apps. Delete one you no longer need first.`,
+      },
+      403
     );
   }
 
@@ -866,6 +889,21 @@ async function handleApiCreateToken(request: Request, env: Env): Promise<Respons
     return jsonResponse(
       { error: "invalid_input", message: "scope must be 'publish' or 'read'" },
       400
+    );
+  }
+
+  const { count: tokenCount } = (await env.DB.prepare(
+    `SELECT COUNT(*) as count FROM api_tokens WHERE user_id = ?`
+  )
+    .bind(user.id)
+    .first<{ count: number }>())!;
+  if (tokenCount >= MAX_TOKENS_PER_ACCOUNT) {
+    return jsonResponse(
+      {
+        error: "limit_reached",
+        message: `Accounts are limited to ${MAX_TOKENS_PER_ACCOUNT} tokens. Revoke one you no longer need first.`,
+      },
+      403
     );
   }
 

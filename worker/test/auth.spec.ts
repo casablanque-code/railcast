@@ -547,6 +547,44 @@ describe("POST /api/apps", () => {
     expect(body.name).toBe("My App");
   });
 
+  it("refuses to create a 51st app once the per-account cap is hit", async () => {
+    const cookie = await loggedInCookie();
+    // Seed 50 apps directly (bypasses rate limiting on the endpoint, which
+    // isn't what this test is about) for one user.
+    const sessionRow = await env.DB.prepare(
+      `SELECT user_id FROM sessions WHERE id = ?`
+    )
+      .bind(await sha256Hex(cookie.slice("session=".length)))
+      .first<{ user_id: string }>();
+    const userId = sessionRow!.user_id;
+    const now = Math.floor(Date.now() / 1000);
+    for (let i = 0; i < 50; i++) {
+      await env.DB.prepare(
+        `INSERT INTO apps (id, owner_email, owner_user_id, signing_public_key, name, created_at) VALUES (?, ?, ?, ?, ?, ?)`
+      )
+        .bind(`capped-app-${i}`, "cap-test@example.com", userId, "pubkey", `App ${i}`, now)
+        .run();
+    }
+
+    const res = await SELF.fetch("https://railcast.test/api/apps", {
+      method: "POST",
+      headers: { Cookie: cookie, "Content-Type": "application/json" },
+      body: JSON.stringify({ name: "One too many", signing_public_key: "pubkey" }),
+    });
+    expect(res.status).toBe(403);
+    const body = await res.json<{ error: string }>();
+    expect(body.error).toBe("limit_reached");
+
+    // Deleting one frees a slot.
+    await env.DB.prepare(`DELETE FROM apps WHERE id = ?`).bind("capped-app-0").run();
+    const retry = await SELF.fetch("https://railcast.test/api/apps", {
+      method: "POST",
+      headers: { Cookie: cookie, "Content-Type": "application/json" },
+      body: JSON.stringify({ name: "Fits now", signing_public_key: "pubkey" }),
+    });
+    expect(retry.status).toBe(201);
+  });
+
   it("allows two apps with the same name — name is just a label, not a key", async () => {
     const cookie = await loggedInCookie();
     const create = () =>
