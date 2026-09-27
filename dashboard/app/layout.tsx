@@ -9,21 +9,27 @@ export const metadata: Metadata = {
 };
 
 function RailLogo() {
+  // Rails converging to a single vanishing point, rather than the previous
+  // evenly-spaced ladder (which read as a fence, not a track). Sleeper
+  // spacing shrinks and their opacity fades toward the vanishing point —
+  // that's what sells the depth at this size; an actual gradient/shadow
+  // just turns to mud at 20px.
   return (
     <svg
-      width="20"
+      width="22"
       height="14"
-      viewBox="0 0 20 14"
+      viewBox="0 0 26 16"
       fill="none"
       aria-hidden="true"
       className="shrink-0 text-ink"
     >
-      <line x1="0" y1="3" x2="20" y2="3" stroke="currentColor" strokeWidth="1.5" />
-      <line x1="0" y1="11" x2="20" y2="11" stroke="currentColor" strokeWidth="1.5" />
-      <line x1="2" y1="1" x2="2" y2="13" stroke="currentColor" strokeWidth="1.5" />
-      <line x1="7" y1="1" x2="7" y2="13" stroke="currentColor" strokeWidth="1.5" />
-      <line x1="12" y1="1" x2="12" y2="13" stroke="currentColor" strokeWidth="1.5" />
-      <line x1="17" y1="1" x2="17" y2="13" stroke="currentColor" strokeWidth="1.5" />
+      <line x1="1" y1="2" x2="25" y2="8" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+      <line x1="1" y1="14" x2="25" y2="8" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+      <line x1="3.40" y1="2.60" x2="3.40" y2="13.40" stroke="currentColor" strokeWidth="1.3" strokeOpacity="1" />
+      <line x1="7.72" y1="3.68" x2="7.72" y2="12.32" stroke="currentColor" strokeWidth="1.3" strokeOpacity="0.85" />
+      <line x1="12.52" y1="4.88" x2="12.52" y2="11.12" stroke="currentColor" strokeWidth="1.3" strokeOpacity="0.68" />
+      <line x1="17.32" y1="6.08" x2="17.32" y2="9.92" stroke="currentColor" strokeWidth="1.3" strokeOpacity="0.5" />
+      <line x1="21.64" y1="7.16" x2="21.64" y2="8.84" stroke="currentColor" strokeWidth="1.3" strokeOpacity="0.32" />
     </svg>
   );
 }
