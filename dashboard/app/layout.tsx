@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import "./globals.css";
+import { TrainTrack } from "lucide-react";
 import { SupportButton } from "./SupportButton";
 
 export const metadata: Metadata = {
@@ -7,32 +8,6 @@ export const metadata: Metadata = {
   description:
     "Hosted appcast feeds and update delivery for Sparkle. WinSparkle and Velopack support is planned.",
 };
-
-function RailLogo() {
-  // Rails converging to a single vanishing point, rather than the previous
-  // evenly-spaced ladder (which read as a fence, not a track). Sleeper
-  // spacing shrinks and their opacity fades toward the vanishing point —
-  // that's what sells the depth at this size; an actual gradient/shadow
-  // just turns to mud at 20px.
-  return (
-    <svg
-      width="22"
-      height="14"
-      viewBox="0 0 26 16"
-      fill="none"
-      aria-hidden="true"
-      className="shrink-0 text-ink"
-    >
-      <line x1="1" y1="2" x2="25" y2="8" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
-      <line x1="1" y1="14" x2="25" y2="8" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
-      <line x1="3.40" y1="2.60" x2="3.40" y2="13.40" stroke="currentColor" strokeWidth="1.3" strokeOpacity="1" />
-      <line x1="7.72" y1="3.68" x2="7.72" y2="12.32" stroke="currentColor" strokeWidth="1.3" strokeOpacity="0.85" />
-      <line x1="12.52" y1="4.88" x2="12.52" y2="11.12" stroke="currentColor" strokeWidth="1.3" strokeOpacity="0.68" />
-      <line x1="17.32" y1="6.08" x2="17.32" y2="9.92" stroke="currentColor" strokeWidth="1.3" strokeOpacity="0.5" />
-      <line x1="21.64" y1="7.16" x2="21.64" y2="8.84" stroke="currentColor" strokeWidth="1.3" strokeOpacity="0.32" />
-    </svg>
-  );
-}
 
 function GitHubIcon() {
   return (
@@ -56,7 +31,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
         <div className="mx-auto min-h-screen max-w-3xl px-6 py-10">
           <header className="mb-10 flex items-center justify-between">
             <a href="/" className="flex items-center gap-2 text-sm font-semibold tracking-tight">
-              <RailLogo />
+              <TrainTrack size={20} strokeWidth={2} className="shrink-0 text-ink" aria-hidden="true" />
               railcast
             </a>
             <div className="flex items-center gap-4">
