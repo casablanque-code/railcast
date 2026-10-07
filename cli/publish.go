@@ -247,14 +247,31 @@ func cmdPublish(args []string) {
 	)
 }
 
+// loadPrivateKey reads a Go-style Ed25519 private key (64 bytes, base64, one
+// value per line — other lines are ignored). It is deliberately strict: a
+// 32-byte value is a public key as often as a seed, and 'publish' must not
+// guess. Use loadImportKey for keys that come from other tools.
 func loadPrivateKey(path string) (ed25519.PrivateKey, error) {
+	return readKeyFile(path, false)
+}
+
+// loadImportKey is loadPrivateKey plus 32-byte seeds, which is what Sparkle's
+// generate_keys exports. A 64-byte key wins if present; a 32-byte value is
+// only used when it is the single candidate in the file ('railcast keygen'
+// prints the 32-byte PUBLIC key on its own line as well, and taking that for
+// a seed would silently register the wrong key).
+func loadImportKey(path string) (ed25519.PrivateKey, error) {
+	return readKeyFile(path, true)
+}
+
+func readKeyFile(path string, allowSeed bool) (ed25519.PrivateKey, error) {
 	raw, err := os.ReadFile(path)
 	if err != nil {
 		return nil, err
 	}
 
-	lines := strings.Split(string(raw), "\n")
-	for _, line := range lines {
+	var seeds [][]byte
+	for _, line := range strings.Split(string(raw), "\n") {
 		line = strings.TrimSpace(line)
 		if line == "" {
 			continue
@@ -263,11 +280,23 @@ func loadPrivateKey(path string) (ed25519.PrivateKey, error) {
 		if err != nil {
 			continue // not base64 (a label or other text) — skip
 		}
-		if len(decoded) == ed25519.PrivateKeySize {
+		switch {
+		case len(decoded) == ed25519.PrivateKeySize:
 			return ed25519.PrivateKey(decoded), nil
+		case allowSeed && len(decoded) == ed25519.SeedSize:
+			seeds = append(seeds, decoded)
 		}
 	}
 
+	if len(seeds) == 1 {
+		return ed25519.NewKeyFromSeed(seeds[0]), nil
+	}
+	if len(seeds) > 1 {
+		return nil, fmt.Errorf("%s has several 32-byte base64 values and no 64-byte key — can't tell the private seed from a public key; keep only the private key line", path)
+	}
+	if allowSeed {
+		return nil, fmt.Errorf("no valid ed25519 private key (base64, %d-byte key or %d-byte seed) found in %s", ed25519.PrivateKeySize, ed25519.SeedSize, path)
+	}
 	return nil, fmt.Errorf("no valid ed25519 private key (base64, %d bytes) found in %s", ed25519.PrivateKeySize, path)
 }
 

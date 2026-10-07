@@ -145,3 +145,55 @@ func TestDoUpload_ConflictOnAlreadyPublishedFileKey(t *testing.T) {
 		t.Fatalf("expected the server's already-published message to surface, got: %v", err)
 	}
 }
+
+func TestLoadImportKey_SeedOnly(t *testing.T) {
+	// Sparkle's generate_keys exports a 32-byte seed; it must load as the
+	// same key Go derives from that seed.
+	seed := make([]byte, ed25519.SeedSize)
+	for i := range seed {
+		seed[i] = byte(i + 1)
+	}
+	want := ed25519.NewKeyFromSeed(seed)
+	path := writeTempFile(t, base64.StdEncoding.EncodeToString(seed)+"\n")
+
+	got, err := loadImportKey(path)
+	if err != nil {
+		t.Fatalf("loadImportKey returned an error: %v", err)
+	}
+	if !got.Equal(want) {
+		t.Fatal("seed did not load as the key derived from it")
+	}
+}
+
+func TestLoadImportKey_KeygenOutputWithBarePublicKeyLine(t *testing.T) {
+	// 'railcast keygen' prints the 32-byte public key on a bare line. The
+	// 64-byte private key must win; the public key must never be taken as a seed.
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("failed to generate key: %v", err)
+	}
+	contents := base64.StdEncoding.EncodeToString(pub) + "\n\n" + base64.StdEncoding.EncodeToString(priv) + "\n"
+	got, err := loadImportKey(writeTempFile(t, contents))
+	if err != nil {
+		t.Fatalf("loadPrivateKey returned an error: %v", err)
+	}
+	if !got.Equal(priv) {
+		t.Fatal("loaded the wrong key")
+	}
+}
+
+func TestLoadImportKey_AmbiguousSeeds(t *testing.T) {
+	a := base64.StdEncoding.EncodeToString(make([]byte, ed25519.SeedSize))
+	b := base64.StdEncoding.EncodeToString(append(make([]byte, 31), 1))
+	if _, err := loadImportKey(writeTempFile(t, a+"\n"+b+"\n")); err == nil {
+		t.Fatal("expected an error when two 32-byte values and no 64-byte key are present")
+	}
+}
+
+func TestLoadPrivateKey_StaysStrictAboutSeeds(t *testing.T) {
+	// publish must never accept a bare 32-byte value as a key.
+	seed := base64.StdEncoding.EncodeToString(make([]byte, ed25519.SeedSize))
+	if _, err := loadPrivateKey(writeTempFile(t, seed+"\n")); err == nil {
+		t.Fatal("loadPrivateKey must reject a 32-byte value")
+	}
+}

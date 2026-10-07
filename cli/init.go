@@ -35,6 +35,7 @@ func cmdInit(args []string) {
 	keyPath := fs.String("key", "", "where to save the private key (default: ./<app>.key)")
 	fs.StringVar(keyPath, "k", "", "shorthand for --key")
 	initialBuild := fs.Int("initial-build", 0, "if this app already shipped builds outside Railcast (e.g. your own CFBundleVersion counter), set this to the highest one — auto-assigned build numbers will start above it, avoiding a number that's <= a build already installed somewhere")
+	importKey := fs.String("import-key", "", "use an existing Ed25519 private key instead of generating one — e.g. the one your app already ships with via Sparkle (base64 file: 32-byte seed or 64-byte key); it is copied to --key in Railcast's own format, the original is left alone")
 	noSaveToken := fs.Bool("no-save-token", false, "don't write the token to .railcast.token — fall back to passing --token/$RAILCAST_TOKEN to every command instead")
 	fs.Parse(args)
 	*baseURL = resolveBaseURL(*baseURL)
@@ -62,14 +63,30 @@ func cmdInit(args []string) {
 		fail("refusing to overwrite existing file at %s — pass a different --key path", *keyPath)
 	}
 
-	pub, priv, err := ed25519.GenerateKey(rand.Reader)
-	if err != nil {
-		fail("failed to generate key: %v", err)
+	var pub ed25519.PublicKey
+	var priv ed25519.PrivateKey
+	if *importKey != "" {
+		var err error
+		priv, err = loadImportKey(*importKey)
+		if err != nil {
+			fail("could not read the key to import: %v", err)
+		}
+		pub = priv.Public().(ed25519.PublicKey)
+	} else {
+		var err error
+		pub, priv, err = ed25519.GenerateKey(rand.Reader)
+		if err != nil {
+			fail("failed to generate key: %v", err)
+		}
 	}
 	pubB64 := base64.StdEncoding.EncodeToString(pub)
 	privB64 := base64.StdEncoding.EncodeToString(priv)
 
-	fmt.Printf("Creating %q and registering its signing key...\n", *appName)
+	if *importKey != "" {
+		fmt.Printf("Creating %q with the imported signing key...\n", *appName)
+	} else {
+		fmt.Printf("Creating %q and registering its signing key...\n", *appName)
+	}
 
 	app, err := doCreateApp(*baseURL, *token, *appName, pubB64, *initialBuild)
 	if err != nil {
@@ -137,6 +154,11 @@ func cmdInit(args []string) {
 		fmt.Sprintf("SUFeedURL: %s/%s/appcast.xml", strings.TrimRight(*baseURL, "/"), app.ID),
 		fmt.Sprintf("SUPublicEDKey: %s", app.SigningPublicKey),
 	)
+	if *importKey != "" {
+		fmt.Println()
+		fmt.Println("Imported key: SUPublicEDKey above must equal the one already in your shipping app's Info.plist.")
+		fmt.Println("If it doesn't, this was the wrong key — installed copies would reject every update signed with it.")
+	}
 	if app.BetaToken != "" {
 		fmt.Println()
 		printBox(

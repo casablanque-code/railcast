@@ -53,6 +53,12 @@ Usage:
       .railcast.json and .railcast.token so every later command in this
       directory just works with no flags.
 
+  railcast init --app <n> --import-key <file> --token <token>
+      Same, but reuse the Ed25519 key your app already ships with (e.g. the
+      one Sparkle's generate_keys exported) instead of generating a new one,
+      so already-installed copies keep trusting your updates. The key is
+      copied to <n>.key; your original file is left alone.
+
   railcast publish -f <path>
       Sign and publish a build. --app/--key/--token are read from
       .railcast.json / .railcast.token automatically if you ran 'init' in
