@@ -12,9 +12,11 @@ Railcast is that missing piece. Push a build, get back a signed, hosted feed. No
 - EdDSA signing happens on your machine: Railcast never sees your private key, so even a full compromise of the server can't produce an update your users' Sparkle will accept
 - Release channels (stable / beta) out of the box
 - A CLI that turns "build → signed, hosted release" into one command
-- A web dashboard that mirrors the CLI: same apps, same release history, same delete — pick
-  whichever is more convenient for a given moment (`railcast list`/`railcast cleanup`, or the
-  "releases" panel on each app in the dashboard)
+- Pull a broken release without deleting anything (`railcast yank`)
+- No lock-in: `railcast export` hands you every file, signature and a ready-made feed, and
+  `railcast redirect` moves already-installed apps to your own host without a new release
+- A web dashboard for your apps, tokens and release history — the same list and delete as
+  `railcast list` / `railcast cleanup` (yank, export and redirect are CLI-only for now)
 
 ## Who this is for
 
@@ -102,7 +104,7 @@ Optional flags for either a first publish or an update:
 |---|---|---|
 | `--build <n>` | `-b` | Explicit build number, overriding what's detected from the archive (or Railcast's own auto-assign, if detection isn't possible). Must be greater than the channel's current latest — see Gotchas. |
 | `--channel beta` | `-c` | Publishes to a separate channel instead of `stable`. Build-number ordering is tracked per channel, independently. |
-| `--notes "…"` | | Plain text or Markdown release notes, shown in Sparkle's update dialog. |
+| `--notes "…"` | | Markdown (or plain text) release notes, shown in Sparkle's update dialog. Notes that start with an HTML tag are sent as HTML instead. Markdown rendering needs Sparkle 2.9+ and macOS 12+; older clients show the raw text. |
 | `--notes-file path` | | Same, read from a file — overrides `--notes` if both are given. |
 | `--min-system-version <v>` | | Lowest macOS version the build runs on, e.g. `13.0` (`sparkle:minimumSystemVersion`). Detected from `LSMinimumSystemVersion` in the `.app`'s `Info.plist` for a `.zip`. |
 | `--critical` | | Marks the update as critical (`sparkle:criticalUpdate`) — Sparkle won't let the user postpone it. |
@@ -122,18 +124,33 @@ New update checks get the previous release again. Sparkle never downgrades, so a
 
 ## Taking your releases with you
 
+Railcast is run by one person, so nothing about your releases is locked in here.
+
+**1. Export** everything:
+
 ```bash
 railcast export --app myapp --out ./export --files-url https://updates.myapp.com/files
 ```
 
-Downloads every release file (checked against its recorded sha256), writes `releases.json` (signatures, hashes, notes) and a ready-made `appcast.xml` that points at `--files-url`. Upload `export/files/` to any static host and serve the XML. Installed copies keep polling the feed URL they shipped with, so serve the new feed from the old URL (or ship a release that changes `SUFeedURL`) to move them.
+Downloads every release file (checked against its recorded sha256), writes `releases.json` (signatures, hashes, notes) and a ready-made `appcast.xml` (plus `appcast-beta.xml` etc.) pointing at `--files-url`. Upload `export/files/` to any static host and serve the XML there.
+
+**2. Redirect** installed apps to it:
+
+```bash
+railcast redirect --to https://updates.myapp.com/appcast.xml
+```
+
+Installed copies keep asking the feed URL they shipped with. After this, that URL answers with a redirect (302) to the new feed, so they follow you without a new release. Railcast fetches the target first and refuses it unless it looks like an appcast (`--force` overrides). Keep the new feed signed with the same key — installed copies still trust the `SUPublicEDKey` they shipped with. The beta channel follows too if the URL ends in `/appcast.xml` (it maps to `appcast-beta.xml` next to it). Undo with `railcast redirect --clear`; `railcast redirect` alone shows the current state. This hasn't been tried against a real Sparkle client yet — test it with a throwaway app before relying on it.
 
 ## Gotchas
 
 - **Upload filenames are permanent per app.** Once `appid/filename` has a published version attached, that exact filename can never be re-uploaded for that app — it's intentional (nothing should be able to silently swap the bytes behind an already-signed, already-published release). If you get `"...zip" was already published for this app`, the fix is to rename the archive, not to change `--version`/`--build`. Baking the version into the filename up front avoids ever hitting this.
 - **`--build`/`--version` are detected from the archive, not tracked by Railcast.** For a `.zip`, Railcast reads `CFBundleShortVersionString`/`CFBundleVersion` straight from the `.app`'s own `Info.plist` inside it — the same values already baked into what's running on someone's Mac, so there's no separate counter that can drift out of sync. This only works for `.zip` archives with a `.app` inside and a numeric `CFBundleVersion`; anything else (`.dmg`/`.pkg`, or a `.zip` where detection fails) falls back to a per-app, per-channel counter Railcast maintains itself (starting at `1`, `stable` and `beta` independent) — pass `--version` explicitly in that case, and see the next point for `--build`.
 - **If you're relying on Railcast's own counter (the fallback above), it doesn't know about builds you shipped before adopting Railcast.** Sparkle compares the appcast's build number against the installed app's own `CFBundleVersion` — if that's already at, say, `42` from your own tooling, and Railcast's counter starts fresh at `1`, existing users would never see the update (`1 < 42`). This isn't a concern if `.zip` auto-detection is working (see above) — it always reflects the real `CFBundleVersion`, so it can't fall behind. It only matters for `.dmg`/`.pkg` or undetectable `.zip`s: set a floor once, at `init` time — `railcast init --app myapp --initial-build 42` — and the counter starts at `43` instead. Forgot, and the app already exists? Pass an explicit `--build` higher than your last real one for the next publish; the counter picks up from there afterwards.
-- **The signing key never touches the server.** `init` generates it locally and only ever uploads the *public* half. If `<app>.key` is lost, there is no way to publish further updates to that app under the same `SUPublicEDKey` — you'd need a new app (new key, new feed URL, and existing installs would need to be pointed at it some other way, which Railcast doesn't automate).
+- **The signing key never touches the server.** `init` generates it locally (or imports yours with `--import-key`) and only ever uploads the *public* half. If `<app>.key` is lost, there is no way to publish further updates to that app under the same `SUPublicEDKey`: installed copies would reject anything signed with a different key, so those users would have to download the new app by hand. Back the key up.
+- **`publish` checks your key before uploading.** It verifies the fresh signature and compares the key's public half with the one registered for the app; a mismatch (wrong `--key` file) stops the publish instead of producing a feed Sparkle would silently reject. The server itself does not verify signatures — it only checks sha256 and size.
+- **The public feed is cached at the edge for up to 60 seconds.** A release you just published (or yanked) is visible immediately in the data center you published from, and within a minute everywhere else. Beta feeds are never cached.
+- **Limits on the hosted instance:** 500 MiB per file, 5 GiB of published releases per account, 60 uploads per hour, 50 apps and 100 tokens per account. Uploads that never get registered as a release are deleted by a nightly sweep after 24 hours. Delete old releases (`railcast cleanup`) to free space.
 - **`--app` at `init` time is just a local label** — it picks the default key filename and shows up in your terminal, but the id Railcast actually uses (in the feed URL, in `--app` for `publish`) is a separate, server-generated id written into `.railcast.json`. You don't need it to be unique across all Railcast users.
 - **Publishing from a different machine or directory** (no local `.railcast.json`/key) means passing `--app <id>` and `--key <path>` explicitly to `publish` — copy both from wherever `init` originally ran. Don't run `init` again for an app you already have; that creates a brand-new app with a brand-new key, not a continuation of the old one.
 - **Beta channel feeds are unlisted, not private.** `railcast init` prints a feed URL like `.../appcast.xml?channel=beta&token=<beta_token>` — anyone with that URL can read the beta feed, there's no per-user auth on it. Treat the URL itself as the secret; it's not shown again after `init`, but you can find the current one on the dashboard.
@@ -151,5 +168,8 @@ In active development. macOS / Sparkle only.
 Free and open source under [AGPL-3.0](./LICENSE) — [self-host it](./SELF-HOSTING.md), or use the
 hosted instance at [railcast.casablanque.com](https://railcast.casablanque.com). No account
 gating, no paid tier. Donations are welcome but never required — see the site for links.
+
+The hosted instance is run by one person. That is why export and redirect exist: if it ever
+goes away, your releases and your installed apps can leave with you.
 
 Questions or bugs: **casablanque@proton.me**

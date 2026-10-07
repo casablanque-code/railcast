@@ -50,8 +50,7 @@ export default function LoginPage() {
       <div className="mb-8">
         <h1 className="text-xl font-semibold tracking-tight">Log in to Railcast</h1>
         <p className="mt-1 text-sm text-ink/60">
-          Hosted appcast feeds and update delivery for Sparkle. WinSparkle and Velopack support
-          is planned.
+          Hosted appcast feeds and update delivery for Sparkle.
         </p>
       </div>
 

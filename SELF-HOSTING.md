@@ -46,6 +46,8 @@ Open `worker/wrangler.toml` and change:
 - `vars.PUBLIC_FILE_BASE_URL` — see step 4, you'll fill this in once the R2
   bucket has a public domain
 - `vars.MAX_UPLOAD_BYTES` — optional, defaults to 500 MiB per upload if unset
+- `vars.STORAGE_QUOTA_BYTES` — optional, total size of published releases one
+  account may keep; defaults to 5 GiB
 
 `r2_buckets[0].bucket_name` should already match what you created in step 2;
 change it there too if you picked a different name.
@@ -68,7 +70,8 @@ quick checks, not production traffic.)
 npx wrangler d1 migrations apply railcast --remote
 ```
 
-This applies everything under `worker/migrations/` in order. Use
+This applies everything under `worker/migrations/` in order (the numbering has
+gaps on purpose: 0002–0006 were folded into `0001_initial.sql`). Use
 `--local` instead if you want to run the Worker locally first (see
 [Running locally](#running-locally)) before ever touching the remote database.
 
@@ -102,7 +105,23 @@ npx wrangler deploy
 ```
 
 That's it — visit your domain, sign up, and you should land on a working
-dashboard.
+dashboard. The deploy also registers the nightly cleanup cron from
+`[triggers]` in `wrangler.toml` (see below).
+
+## Upgrading an existing instance
+
+Pull the new code, then **apply migrations first, deploy second** — a new
+Worker talking to an old schema fails on the missing columns:
+
+```bash
+git pull
+cd worker
+npx wrangler d1 migrations apply railcast --remote
+cd ../dashboard && npm ci && npm run build && cd ../worker
+npx wrangler deploy
+```
+
+`CHANGELOG.md` says which release needs which migration.
 
 ## Running locally
 
@@ -160,6 +179,11 @@ own fork.
   trigger under `[triggers]` runs a nightly sweep that deletes R2 objects which were
   uploaded but never registered as a release (older than `ORPHAN_MIN_AGE_SECONDS`,
   default 24 h). Keep the cron if you keep the bucket public.
+- **Edge caching of the public feed** — the Worker caches the stable
+  `appcast.xml` for 60 seconds with the Cache API (and purges it on publish,
+  yank and delete). The Cache API only works on routes attached to your own
+  domain, as in step 3 — on a `workers.dev` address it silently does nothing,
+  which is harmless, just uncached.
 - **CORS/Origin checks** — `hasValidOrigin()` compares against the request's
   own `Host`, so it adapts to whatever domain you deploy to automatically —
   nothing to change here.
@@ -170,6 +194,14 @@ own fork.
   if you want protection against accidental overwrites/deletes beyond what
   Railcast's own immutability check (re-uploading to an already-published
   `file_key` 409s) gives you.
+
+## Leaving, or moving between hosts
+
+Nothing is locked in. `railcast export --app <id> --out <dir> --files-url <url>`
+downloads all releases, signatures and a ready-made appcast from any instance
+(yours or the hosted one), and `railcast redirect --to <new feed url>` makes the
+old feed URL send installed apps to the new one. See the README section
+"Taking your releases with you" for the details.
 
 ## Getting help
 

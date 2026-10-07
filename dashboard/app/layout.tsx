@@ -6,7 +6,7 @@ import { SupportButton } from "./SupportButton";
 export const metadata: Metadata = {
   title: "Railcast",
   description:
-    "Hosted appcast feeds and update delivery for Sparkle. WinSparkle and Velopack support is planned.",
+    "Hosted appcast feeds and update delivery for Sparkle.",
 };
 
 function GitHubIcon() {

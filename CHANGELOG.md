@@ -38,6 +38,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `GET /api/apps` and the export include `feed_redirect_url`.
 
 ### Changed
+- Docs brought up to date: README (limits, caching, key handling, export/redirect), SELF-HOSTING
+  (new vars, upgrade order, cron, cache), dashboard copy (no more WinSparkle/Velopack promises,
+  yanked releases are badged).
 - Release notes are now marked `sparkle:format="markdown"` in the appcast, as the README
   always promised (Sparkle 2.9+, macOS 12+; older clients show the text unformatted). Notes
   that start with an HTML tag are left as HTML, so existing HTML notes keep rendering.

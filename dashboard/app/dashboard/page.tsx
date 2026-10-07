@@ -265,6 +265,14 @@ export default function DashboardPage() {
             <span className="rounded bg-ink/5 px-1.5 py-0.5 text-[11px] font-medium uppercase tracking-wide text-ink/60">
               {r.channel}
             </span>
+            {r.yanked === 1 && (
+              <span
+                className="rounded bg-amber-50 px-1.5 py-0.5 text-[11px] font-medium uppercase tracking-wide text-amber-700"
+                title="Hidden from the appcast — undo with: railcast yank <version> --undo"
+              >
+                yanked
+              </span>
+            )}
             {r.critical === 1 && (
               <span className="rounded bg-red-50 px-1.5 py-0.5 text-[11px] font-medium uppercase tracking-wide text-red-600">
                 critical
@@ -519,7 +527,9 @@ export default function DashboardPage() {
             <p className="text-xs text-ink/50">
               Click <span className="font-mono">releases</span> on an app to see and delete its
               published builds — the same list <span className="font-mono">railcast list</span> and{" "}
-              <span className="font-mono">railcast cleanup</span> use from the CLI.
+              <span className="font-mono">railcast cleanup</span> use from the CLI. Yanking, exporting
+              and feed redirects are CLI-only for now (<span className="font-mono">railcast yank</span>,{" "}
+              <span className="font-mono">export</span>, <span className="font-mono">redirect</span>).
             </p>
           )}
           {inlineApps.map(appRow)}

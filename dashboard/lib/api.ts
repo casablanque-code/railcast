@@ -82,6 +82,8 @@ export interface Release {
   release_notes: string | null;
   critical: number; // 0 | 1 — D1 has no native boolean
   phased_rollout_interval: number | null;
+  min_system_version: string | null;
+  yanked: number; // 0 | 1 — hidden from the appcast when 1 (`railcast yank`)
   created_at: number;
 }
 
