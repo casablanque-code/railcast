@@ -163,8 +163,9 @@ function hexToBytes(hex: string): Uint8Array {
   return bytes;
 }
 
-// Constant-time-ish comparison so a failed login can't be timed
-// character-by-character against a real hash.
+// Constant-time-ish comparison so a failed login (or a guessed beta-feed
+// token) can't be timed character-by-character against the real value.
+// Works on any equal-length strings, not just hex.
 function timingSafeEqualHex(a: string, b: string): boolean {
   if (a.length !== b.length) return false;
   let diff = 0;
@@ -290,9 +291,12 @@ interface BearerIdentity {
 }
 
 async function getBearerIdentity(request: Request, env: Env): Promise<BearerIdentity | null> {
-  const authHeader = request.headers.get("Authorization") ?? "";
-  const token = authHeader.replace("Bearer ", "");
-  if (!token) return null;
+  // Strict "<scheme> <token>" parse — the scheme is case-insensitive (RFC
+  // 7235) and nothing else may be in the header. A blind replace() would
+  // happily mangle e.g. "Basic Bearer x" into something token-shaped.
+  const match = /^Bearer[ \t]+(\S+)$/i.exec(request.headers.get("Authorization") ?? "");
+  if (!match) return null;
+  const token = match[1];
   const tokenHash = await sha256Hex(token);
   const now = Math.floor(Date.now() / 1000);
 
@@ -1507,7 +1511,7 @@ async function handleAppcast(request: Request, env: Env, appId: string): Promise
       .first<{ beta_token: string | null }>();
 
     const suppliedToken = url.searchParams.get("token") ?? "";
-    if (!appRow || !appRow.beta_token || suppliedToken !== appRow.beta_token) {
+    if (!appRow || !appRow.beta_token || !timingSafeEqualHex(suppliedToken, appRow.beta_token)) {
       // Same 404 as "not found" — don't reveal whether the app/channel
       // exists to someone without the token.
       return new Response("Not found", { status: 404 });

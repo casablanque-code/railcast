@@ -1646,3 +1646,23 @@ describe("upload and version registration stay bearer-only", () => {
     expect(res.status).toBe(401);
   });
 });
+
+describe("Authorization header parsing", () => {
+  async function listApps(authorization: string) {
+    return SELF.fetch("https://railcast.test/api/apps", { headers: { Authorization: authorization } });
+  }
+
+  it("accepts the Bearer scheme case-insensitively", async () => {
+    const { token } = await seedUserAppAndToken();
+    expect((await listApps(`Bearer ${token}`)).status).toBe(200);
+    expect((await listApps(`bearer ${token}`)).status).toBe(200);
+  });
+
+  it("rejects other schemes and extra tokens in the header", async () => {
+    const { token } = await seedUserAppAndToken();
+    expect((await listApps(`Token ${token}`)).status).toBe(401);
+    expect((await listApps(`Basic Bearer ${token}`)).status).toBe(401);
+    expect((await listApps(`Bearer ${token} extra`)).status).toBe(401);
+    expect((await listApps(token)).status).toBe(401);
+  });
+});

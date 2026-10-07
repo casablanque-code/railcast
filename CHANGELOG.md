@@ -6,6 +6,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 (pre-1.0, so minor bumps may still carry breaking changes).
 
+## [Unreleased]
+
+### Added
+- `railcast init --import-key <file>` — onboard an app that already ships with a Sparkle
+  signing key (64-byte key or 32-byte seed), so installed copies keep trusting updates.
+  README has the migration steps.
+
+### Changed
+- `railcast publish` verifies the fresh signature and checks the signing key against the
+  public key registered for the app before uploading anything.
+
+### Security
+- `Authorization` header is parsed strictly (`Bearer <token>`, scheme case-insensitive).
+- The beta-feed token is compared in constant time.
+
 ## [0.9.0] - 2026-09-23
 
 ### Added
