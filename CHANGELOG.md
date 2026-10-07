@@ -29,6 +29,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `GET /:appId/export` returns every release with signatures and file keys, plus appcasts
   rendered for a new host (`?files_url=`).
 
+- `railcast yank <version> [--undo]` and `railcast export --out <dir> [--files-url <url>]`.
+  `railcast list` marks yanked releases; `railcast cleanup` ignores them.
+
 ### Changed
 - The public (stable) `appcast.xml` is now actually served from the edge cache (60 s TTL,
   purged in the local data center on publish/delete). It used to send `no-cache`, so every

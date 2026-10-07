@@ -111,6 +111,23 @@ Optional flags for either a first publish or an update:
 `--file`/`-f`, `--version`/`-v`, `--app`/`-a`, `--key`/`-k`, and `--token`/`-t` all have the same
 short forms shown earlier. Run `railcast publish --help` any time for the full, current flag list.
 
+## Pulling a bad release
+
+```bash
+railcast yank 1.4.2            # hide it from the feed, keep the file
+railcast yank 1.4.2 --undo     # bring it back
+```
+
+New update checks get the previous release again. Sparkle never downgrades, so anyone who already installed the bad build stays on it until you publish a fix with a **higher build number**. `railcast list` marks yanked releases; `railcast cleanup` never deletes them. The only live release on a channel can't be yanked.
+
+## Taking your releases with you
+
+```bash
+railcast export --app myapp --out ./export --files-url https://updates.myapp.com/files
+```
+
+Downloads every release file (checked against its recorded sha256), writes `releases.json` (signatures, hashes, notes) and a ready-made `appcast.xml` that points at `--files-url`. Upload `export/files/` to any static host and serve the XML. Installed copies keep polling the feed URL they shipped with, so serve the new feed from the old URL (or ship a release that changes `SUFeedURL`) to move them.
+
 ## Gotchas
 
 - **Upload filenames are permanent per app.** Once `appid/filename` has a published version attached, that exact filename can never be re-uploaded for that app — it's intentional (nothing should be able to silently swap the bytes behind an already-signed, already-published release). If you get `"...zip" was already published for this app`, the fix is to rename the archive, not to change `--version`/`--build`. Baking the version into the filename up front avoids ever hitting this.
