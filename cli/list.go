@@ -31,6 +31,7 @@ type releaseSummary struct {
 	ReleaseNotes          string `json:"release_notes"`
 	Critical              int    `json:"critical"` // D1 stores 0/1, not a JSON bool
 	PhasedRolloutInterval *int   `json:"phased_rollout_interval"`
+	Yanked                int    `json:"yanked"` // 0/1, hidden from the appcast when 1
 	CreatedAt             int64  `json:"created_at"`
 }
 
@@ -129,19 +130,24 @@ func printAppReleases(appID, appName string, releases []releaseSummary) {
 	}
 
 	// The server returns releases ordered channel ASC, build_number DESC
-	// (see handleListReleases) — the first row seen for a given channel is
-	// therefore that channel's current latest, with no extra sorting needed
-	// here.
+	// (see handleListReleases) — the first LIVE row seen for a given channel
+	// is therefore that channel's current latest (yanked ones aren't in the
+	// feed), with no extra sorting needed here.
 	seenChannel := map[string]bool{}
 
 	tw := tabwriter.NewWriter(os.Stdout, 0, 2, 2, ' ', 0)
 	for _, r := range releases {
-		isLatest := !seenChannel[r.Channel]
-		seenChannel[r.Channel] = true
+		isLatest := r.Yanked == 0 && !seenChannel[r.Channel]
+		if r.Yanked == 0 {
+			seenChannel[r.Channel] = true
+		}
 
 		var flags []string
 		if isLatest {
 			flags = append(flags, "latest")
+		}
+		if r.Yanked != 0 {
+			flags = append(flags, "yanked")
 		}
 		if r.Critical != 0 {
 			flags = append(flags, "critical")

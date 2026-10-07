@@ -29,6 +29,10 @@ func main() {
 		cmdList(os.Args[2:])
 	case "cleanup":
 		cmdCleanup(os.Args[2:])
+	case "yank":
+		cmdYank(os.Args[2:])
+	case "export":
+		cmdExport(os.Args[2:])
 	case "version", "--version", "-v":
 		fmt.Println("railcast", version)
 	case "help", "--help", "-h":
@@ -92,6 +96,17 @@ Usage:
       served to any client anyway). Shows what would be deleted and asks
       for confirmation; pass --yes to skip the prompt (for CI) or
       --dry-run to only preview.
+
+  railcast yank <version> [--channel stable] [--undo]
+      Pull a broken release: hide it from the appcast without deleting it,
+      so new update checks get the previous build again. Sparkle never
+      downgrades — people who already installed it need a newer build.
+
+  railcast export --app <id> --out <dir> [--files-url <https url>]
+      Download everything: every release file (hash-checked), all
+      signatures and metadata (releases.json), and — with --files-url,
+      where you'll host the files — ready-made appcast XML for that host.
+      Nothing about your releases is stuck here.
 
   railcast keygen        Generate a signing key without creating an app
   railcast version        Print the CLI version

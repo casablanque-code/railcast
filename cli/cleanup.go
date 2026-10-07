@@ -109,10 +109,16 @@ func cmdCleanup(args []string) {
 // handleListReleases) — the first historyLimit rows seen for a channel are
 // that channel's currently-served appcast window, and everything after
 // that has already fallen out of it.
+// Yanked releases are invisible in the feed, so they don't use up a slot in
+// the history window, and they're never proposed for deletion here — they
+// were hidden on purpose and stay until someone deletes them explicitly.
 func releasesBeyondHistoryLimit(releases []releaseSummary, historyLimit int) []releaseSummary {
 	seenInChannel := map[string]int{}
 	var beyond []releaseSummary
 	for _, r := range releases {
+		if r.Yanked != 0 {
+			continue
+		}
 		seenInChannel[r.Channel]++
 		if seenInChannel[r.Channel] > historyLimit {
 			beyond = append(beyond, r)
