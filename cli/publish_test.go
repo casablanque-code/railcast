@@ -197,3 +197,35 @@ func TestLoadPrivateKey_StaysStrictAboutSeeds(t *testing.T) {
 		t.Fatal("loadPrivateKey must reject a 32-byte value")
 	}
 }
+
+func TestSignAndVerify_ProducesVerifiableSignature(t *testing.T) {
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("failed to generate key: %v", err)
+	}
+	data := []byte("some build bytes")
+	sigB64, err := signAndVerify(priv, data)
+	if err != nil {
+		t.Fatalf("signAndVerify returned an error: %v", err)
+	}
+	sig, err := base64.StdEncoding.DecodeString(sigB64)
+	if err != nil || !ed25519.Verify(pub, data, sig) {
+		t.Fatal("returned signature does not verify")
+	}
+}
+
+func TestCheckKeyMatchesApp(t *testing.T) {
+	pub, _, _ := ed25519.GenerateKey(rand.Reader)
+	other, _, _ := ed25519.GenerateKey(rand.Reader)
+	apps := []appSummary{{ID: "app1", SigningPublicKey: base64.StdEncoding.EncodeToString(pub)}}
+
+	if err := checkKeyMatchesApp(apps, "app1", pub); err != nil {
+		t.Fatalf("matching key rejected: %v", err)
+	}
+	if err := checkKeyMatchesApp(apps, "app1", other); err == nil {
+		t.Fatal("expected an error for a key that differs from the registered one")
+	}
+	if err := checkKeyMatchesApp(apps, "unknown", other); err != nil {
+		t.Fatalf("unknown app should be left to the upload step, got: %v", err)
+	}
+}

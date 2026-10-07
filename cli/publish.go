@@ -123,8 +123,10 @@ func cmdPublish(args []string) {
 	sum := sha256.Sum256(fileBytes)
 	sha256Hex := hex.EncodeToString(sum[:])
 
-	signature := ed25519.Sign(privKey, fileBytes)
-	signatureB64 := base64.StdEncoding.EncodeToString(signature)
+	signatureB64, err := signAndVerify(privKey, fileBytes)
+	if err != nil {
+		fail("%v", err)
+	}
 
 	filename := filepath.Base(filePath)
 
@@ -210,6 +212,20 @@ func cmdPublish(args []string) {
 	}
 	printBox("Publishing plan", planLines...)
 	fmt.Println()
+
+	// Sparkle clients trust only the SUPublicEDKey the app shipped with, which
+	// is the public key registered at init. Signing with any other key would
+	// publish a feed every installed copy rejects — catch it before upload.
+	// Best effort: if the app list can't be fetched, publish still proceeds.
+	pubKey := privKey.Public().(ed25519.PublicKey)
+	if apps, err := doListApps(baseURL, token); err != nil {
+		fmt.Printf("Note: couldn't check the key against the registered one (%v) — continuing.\n\n", err)
+	} else if err := checkKeyMatchesApp(apps, appID, pubKey); err != nil {
+		fail("%v", err)
+	} else {
+		fmt.Println("Signing key matches the app's registered public key.")
+		fmt.Println()
+	}
 
 	fmt.Println("[1/2] Uploading build...")
 	upload, err := doUpload(baseURL, token, appID, filename, sha256Hex, fileBytes)
@@ -298,6 +314,37 @@ func readKeyFile(path string, allowSeed bool) (ed25519.PrivateKey, error) {
 		return nil, fmt.Errorf("no valid ed25519 private key (base64, %d-byte key or %d-byte seed) found in %s", ed25519.PrivateKeySize, ed25519.SeedSize, path)
 	}
 	return nil, fmt.Errorf("no valid ed25519 private key (base64, %d bytes) found in %s", ed25519.PrivateKeySize, path)
+}
+
+// signAndVerify signs data and verifies the result with the matching public
+// key before returning it, so a feed entry is never built from a signature
+// that doesn't check out.
+func signAndVerify(priv ed25519.PrivateKey, data []byte) (string, error) {
+	sig := ed25519.Sign(priv, data)
+	if !ed25519.Verify(priv.Public().(ed25519.PublicKey), data, sig) {
+		return "", fmt.Errorf("signature did not verify against the key's own public half — the private key file looks corrupted")
+	}
+	return base64.StdEncoding.EncodeToString(sig), nil
+}
+
+// checkKeyMatchesApp fails if the public half of the signing key differs from
+// the public key registered for the app. An app missing from the list is not
+// an error here — the upload will report it with a clearer message.
+func checkKeyMatchesApp(apps []appSummary, appID string, pub ed25519.PublicKey) error {
+	registered := ""
+	for _, a := range apps {
+		if a.ID == appID {
+			registered = a.SigningPublicKey
+			break
+		}
+	}
+	if registered == "" {
+		return nil
+	}
+	if got := base64.StdEncoding.EncodeToString(pub); got != registered {
+		return fmt.Errorf("the signing key doesn't match the public key registered for this app\n  key file derives: %s\n  registered:       %s\nInstalled copies would reject updates signed with this key. Use the key from 'railcast init' for this app (--key)", got, registered)
+	}
+	return nil
 }
 
 func doUpload(baseURL, token, appID, filename, sha256Hex string, data []byte) (*uploadResponse, error) {
