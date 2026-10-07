@@ -1,4 +1,5 @@
 import { SELF, env } from "cloudflare:test";
+import worker from "../src/index";
 import { describe, expect, it } from "vitest";
 import { sha256Hex } from "./setup";
 
@@ -1747,5 +1748,86 @@ describe("min_system_version", () => {
     for (const bad of ["", "latest", "13.0.0.1", "13.x", "<b>"]) {
       expect((await publishWithMin(token, appId, "1.0.0", 1, bad)).status).toBe(400);
     }
+  });
+});
+
+describe("abuse limits", () => {
+  async function put(token: string, appId: string, name: string, body: string) {
+    return SELF.fetch(`https://railcast.test/${appId}/upload/${name}`, {
+      method: "PUT",
+      headers: { Authorization: `Bearer ${token}`, "X-Sha256": await sha256Hex(body) },
+      body,
+    });
+  }
+
+  it("rejects an upload that would push the account past its storage quota", async () => {
+    // STORAGE_QUOTA_BYTES is 4096 in vitest.config.mts.
+    const { userId, token, appId } = await seedUserAppAndToken();
+    await env.DB.prepare(
+      `INSERT INTO versions (app_id, channel, version, build_number, file_key, file_size, sha256, signature, created_at)
+       VALUES (?, 'stable', '1.0.0', 1, ?, 4000, ?, 'sig', ?)`
+    )
+      .bind(appId, `${appId}/old.zip`, "0".repeat(64), Math.floor(Date.now() / 1000))
+      .run();
+
+    const tooBig = await put(token, appId, "big.zip", "x".repeat(200));
+    expect(tooBig.status).toBe(413);
+    expect(await tooBig.text()).toContain("quota");
+
+    const fits = await put(token, appId, "small.zip", "x".repeat(50));
+    expect(fits.status).toBe(200);
+    expect(userId).toBeTruthy();
+  });
+
+  it("counts quota across all of an account's apps", async () => {
+    const { userId, token, appId } = await seedUserAppAndToken();
+    const other = await seedSecondApp(userId);
+    await env.DB.prepare(
+      `INSERT INTO versions (app_id, channel, version, build_number, file_key, file_size, sha256, signature, created_at)
+       VALUES (?, 'stable', '1.0.0', 1, ?, 4000, ?, 'sig', ?)`
+    )
+      .bind(other, `${other}/old.zip`, "0".repeat(64), Math.floor(Date.now() / 1000))
+      .run();
+    expect((await put(token, appId, "big.zip", "x".repeat(200))).status).toBe(413);
+  });
+
+  it("rate-limits uploads per account", async () => {
+    const { userId, token, appId } = await seedUserAppAndToken();
+    const now = Math.floor(Date.now() / 1000);
+    const stmt = env.DB.prepare(`INSERT INTO rate_limit_hits (bucket, created_at) VALUES (?, ?)`);
+    await env.DB.batch(Array.from({ length: 60 }, () => stmt.bind(`upload:user:${userId}`, now)));
+
+    const res = await put(token, appId, "one.zip", "hello");
+    expect(res.status).toBe(429);
+    expect(res.headers.get("Retry-After")).toBeTruthy();
+  });
+});
+
+describe("nightly orphan cleanup", () => {
+  it("deletes unregistered uploads, keeps registered ones", async () => {
+    const { token, appId } = await seedUserAppAndToken();
+    expect((await publishVersion(token, appId, "1.0.0", 1)).status).toBe(201);
+    await env.BUILDS.put(`${appId}/never-registered.zip`, "orphan bytes");
+
+    const ctx = { waitUntil: (p: Promise<unknown>) => { pending.push(p); }, passThroughOnException() {} } as unknown as ExecutionContext;
+    const pending: Promise<unknown>[] = [];
+    // A zero minimum age lets the just-uploaded orphan qualify.
+    await worker.scheduled!({} as ScheduledController, { ...env, ORPHAN_MIN_AGE_SECONDS: "0" }, ctx);
+    await Promise.all(pending);
+
+    expect(await env.BUILDS.head(`${appId}/never-registered.zip`)).toBeNull();
+    expect(await env.BUILDS.head(`${appId}/MyApp-1.0.0.zip`)).not.toBeNull();
+  });
+
+  it("leaves recent uploads alone (default 24 h minimum age)", async () => {
+    const { appId } = await seedUserAppAndToken();
+    await env.BUILDS.put(`${appId}/fresh.zip`, "just uploaded");
+
+    const pending: Promise<unknown>[] = [];
+    const ctx = { waitUntil: (p: Promise<unknown>) => { pending.push(p); }, passThroughOnException() {} } as unknown as ExecutionContext;
+    await worker.scheduled!({} as ScheduledController, env, ctx);
+    await Promise.all(pending);
+
+    expect(await env.BUILDS.head(`${appId}/fresh.zip`)).not.toBeNull();
   });
 });

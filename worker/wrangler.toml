@@ -32,6 +32,10 @@ run_worker_first = [
   "/*/releases/*"
 ]
 
+# Nightly sweep of uploads that never became a release — see scheduled().
+[triggers]
+crons = ["17 3 * * *"]
+
 [[d1_databases]]
 binding = "DB"
 database_name = "railcast"
@@ -46,3 +50,6 @@ PUBLIC_FILE_BASE_URL = "https://dl.railcast.casablanque.com"
 # Hard cap on a single build upload, in bytes. Falls back to 500 MiB in the
 # Worker if unset or unparsable — see DEFAULT_MAX_UPLOAD_BYTES in src/index.ts.
 MAX_UPLOAD_BYTES = "524288000"
+# Total bytes of releases one account may keep (5 GiB). Falls back to that in
+# the Worker if unset — see DEFAULT_STORAGE_QUOTA_BYTES in src/index.ts.
+STORAGE_QUOTA_BYTES = "5368709120"

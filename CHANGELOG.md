@@ -18,6 +18,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   it, so Macs that can't run a build are never offered it. Needs migration
   `0011_min_system_version.sql` (`wrangler d1 migrations apply`).
 
+- Abuse limits: uploads are rate-limited per account (60/hour), each account has a total
+  storage quota for published releases (`STORAGE_QUOTA_BYTES`, default 5 GiB; `railcast
+  cleanup` frees space), and a nightly cron deletes R2 objects that were uploaded but never
+  registered as a release (older than `ORPHAN_MIN_AGE_SECONDS`, default 24 h).
+
 ### Changed
 - The public (stable) `appcast.xml` is now actually served from the edge cache (60 s TTL,
   purged in the local data center on publish/delete). It used to send `no-cache`, so every

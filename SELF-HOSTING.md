@@ -154,6 +154,12 @@ own fork.
   of the file are hardcoded, not configurable via `wrangler.toml`. Defaults
   are tuned for a small public instance; edit them directly in the source
   if you're running this for a large team or want it stricter.
+- **Storage quota and the nightly cleanup** — `STORAGE_QUOTA_BYTES` in `wrangler.toml`
+  caps the total size of published releases per account (default 5 GiB), uploads are
+  limited to 60/hour per account (`MAX_UPLOADS_PER_HOUR` in the source), and the cron
+  trigger under `[triggers]` runs a nightly sweep that deletes R2 objects which were
+  uploaded but never registered as a release (older than `ORPHAN_MIN_AGE_SECONDS`,
+  default 24 h). Keep the cron if you keep the bucket public.
 - **CORS/Origin checks** — `hasValidOrigin()` compares against the request's
   own `Host`, so it adapts to whatever domain you deploy to automatically —
   nothing to change here.

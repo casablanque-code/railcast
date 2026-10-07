@@ -7,6 +7,22 @@ export interface Env {
   // Optional; string because wrangler [vars] are always strings. Parsed
   // with DEFAULT_MAX_UPLOAD_BYTES as the fallback — see maxUploadBytes().
   MAX_UPLOAD_BYTES?: string;
+  // Total bytes of published releases one account may keep (default 5 GiB)
+  // and how old an unregistered upload must be before the nightly cleanup
+  // may delete it (default 24 h). Strings because wrangler [vars] are.
+  STORAGE_QUOTA_BYTES?: string;
+  ORPHAN_MIN_AGE_SECONDS?: string;
+}
+
+const DEFAULT_STORAGE_QUOTA_BYTES = 5 * 1024 * 1024 * 1024;
+const DEFAULT_ORPHAN_MIN_AGE_SECONDS = 24 * 3600;
+// Uploads per account per hour. Real publishing is a handful a day; this only
+// bounds how fast an abusive or compromised token can pour bytes into R2.
+const MAX_UPLOADS_PER_HOUR = 60;
+
+function positiveNumber(raw: string | undefined, fallback: number): number {
+  const parsed = Number(raw);
+  return raw !== undefined && Number.isFinite(parsed) && parsed >= 0 ? parsed : fallback;
 }
 
 // Fallback when MAX_UPLOAD_BYTES isn't configured. 500 MiB comfortably
@@ -1176,6 +1192,35 @@ async function handleUpload(
     });
   }
 
+  // Per-account limits, before any byte is written to R2. The quota counts
+  // registered releases only; uploads that never get registered are bounded
+  // by the upload rate limit and swept by the nightly cleanup (scheduled()).
+  const owner = await env.DB.prepare(`SELECT owner_user_id FROM apps WHERE id = ?`)
+    .bind(appId)
+    .first<{ owner_user_id: string | null }>();
+  if (owner?.owner_user_id) {
+    if (await rateLimited(env, `upload:user:${owner.owner_user_id}`, MAX_UPLOADS_PER_HOUR, 3600)) {
+      return new Response(`Too many uploads — limit is ${MAX_UPLOADS_PER_HOUR} per hour`, {
+        status: 429,
+        headers: { "Retry-After": "600" },
+      });
+    }
+    const quota = positiveNumber(env.STORAGE_QUOTA_BYTES, DEFAULT_STORAGE_QUOTA_BYTES);
+    const used = await env.DB.prepare(
+      `SELECT COALESCE(SUM(v.file_size), 0) AS used
+       FROM versions v JOIN apps a ON a.id = v.app_id
+       WHERE a.owner_user_id = ?`
+    )
+      .bind(owner.owner_user_id)
+      .first<{ used: number }>();
+    if ((used?.used ?? 0) + declaredLength > quota) {
+      return new Response(
+        `Storage quota exceeded: ${used?.used ?? 0} of ${quota} bytes used, this upload adds ${declaredLength}. Delete old releases (railcast cleanup) to free space.`,
+        { status: 413 }
+      );
+    }
+  }
+
   const fileKey = `${appId}/${filename}`;
 
   // A file_key that's already attached to a published version is
@@ -1637,7 +1682,54 @@ function withSecurityHeaders(response: Response): Response {
   return new Response(response.body, { status: response.status, statusText: response.statusText, headers });
 }
 
+// Nightly: delete R2 objects that were uploaded but never registered as a
+// version (a failed or abandoned `railcast publish`, or someone filling the
+// bucket), and old rate-limit rows of buckets nobody hits any more.
+async function cleanupOrphanUploads(env: Env): Promise<{ deleted: number }> {
+  const minAge = positiveNumber(env.ORPHAN_MIN_AGE_SECONDS, DEFAULT_ORPHAN_MIN_AGE_SECONDS);
+  const cutoffMs = Date.now() - minAge * 1000;
+  let deleted = 0;
+  let cursor: string | undefined;
+
+  for (let page = 0; page < 50; page++) {
+    const listed = await env.BUILDS.list({ cursor, limit: 500 });
+    const old = listed.objects.filter((o) => o.uploaded.getTime() <= cutoffMs);
+
+    // D1 allows ~100 bound parameters per statement.
+    for (let i = 0; i < old.length; i += 50) {
+      const chunk = old.slice(i, i + 50);
+      const marks = chunk.map(() => "?").join(",");
+      const { results } = await env.DB.prepare(
+        `SELECT file_key FROM versions WHERE file_key IN (${marks})`
+      )
+        .bind(...chunk.map((o) => o.key))
+        .all<{ file_key: string }>();
+      const registered = new Set((results ?? []).map((r) => r.file_key));
+      const orphans = chunk.filter((o) => !registered.has(o.key)).map((o) => o.key);
+      if (orphans.length > 0) {
+        await env.BUILDS.delete(orphans);
+        deleted += orphans.length;
+      }
+    }
+
+    if (!listed.truncated) break;
+    cursor = listed.cursor;
+  }
+
+  const now = Math.floor(Date.now() / 1000);
+  await env.DB.prepare(`DELETE FROM rate_limit_hits WHERE created_at < ?`)
+    .bind(now - 24 * 3600)
+    .run()
+    .catch(() => {});
+
+  return { deleted };
+}
+
 export default {
+  async scheduled(_controller: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
+    ctx.waitUntil(cleanupOrphanUploads(env));
+  },
+
   async fetch(request: Request, env: Env): Promise<Response> {
     return withSecurityHeaders(await route(request, env));
   },

@@ -12,6 +12,7 @@ const workersOptions = {
       // keeping this tiny lets the size-limit tests exceed it without
       // generating huge bodies. Production uses the real wrangler.toml value.
       MAX_UPLOAD_BYTES: "1024",
+      STORAGE_QUOTA_BYTES: "4096",
     },
   },
 };
