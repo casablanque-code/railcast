@@ -1459,6 +1459,8 @@ interface ReleaseRow {
   release_notes: string | null;
   critical: number;
   phased_rollout_interval: number | null;
+  min_system_version: string | null;
+  yanked: number;
   created_at: number;
 }
 
@@ -1480,7 +1482,7 @@ async function handleListReleases(request: Request, env: Env, appId: string): Pr
   // or purely internal (file_key), not something a CLI table needs.
   const { results } = await env.DB.prepare(
     `SELECT id, channel, version, build_number, file_key, file_size, sha256,
-            release_notes, critical, phased_rollout_interval, created_at
+            release_notes, critical, phased_rollout_interval, min_system_version, yanked, created_at
      FROM versions
      WHERE app_id = ?
      ORDER BY channel ASC, build_number DESC`
@@ -1534,6 +1536,8 @@ async function handleDeleteRelease(
     return jsonResponse({ error: "not_found" }, 404);
   }
 
+  // (A yanked release is already invisible in the feed, so deleting it can't
+  // empty the feed; only live releases count toward "the only one left".)
   // Refuse to delete a channel's only remaining release — leaving an
   // active app with zero entries on a channel silently breaks the
   // appcast feed for anyone still on that channel, with no way back
@@ -1547,7 +1551,11 @@ async function handleDeleteRelease(
   const result = await env.DB.prepare(
     `DELETE FROM versions
      WHERE id = ? AND app_id = ?
-       AND (SELECT COUNT(*) FROM versions v2 WHERE v2.app_id = versions.app_id AND v2.channel = versions.channel) > 1`
+       AND (
+         versions.yanked = 1
+         OR (SELECT COUNT(*) FROM versions v2
+             WHERE v2.app_id = versions.app_id AND v2.channel = versions.channel AND v2.yanked = 0) > 1
+       )`
   )
     .bind(id, appId)
     .run();
@@ -1580,6 +1588,127 @@ async function handleDeleteRelease(
   }
 
   return new Response(null, { status: 204 });
+}
+
+// Yank = hide a release from the appcast without deleting it. Sparkle never
+// downgrades, so this is how a broken release is pulled: new update checks
+// get the previous release again, and anyone who already installed the bad
+// one needs a higher build number to move on. Reversible (unyank), and the
+// file stays in R2.
+async function handleSetYanked(
+  request: Request,
+  env: Env,
+  appId: string,
+  releaseId: string,
+  yanked: boolean
+): Promise<Response> {
+  const auth = await requireAppOwnership(request, env, appId, "publish", { allowSession: true });
+  if (!auth.ok) return auth.response;
+  if (!hasValidOrigin(request, new URL(request.url).origin)) {
+    return jsonResponse({ error: "bad_origin" }, 403);
+  }
+
+  const id = Number(releaseId);
+  if (!Number.isInteger(id) || id <= 0) {
+    return jsonResponse({ error: "invalid_input", message: "release id must be a positive integer" }, 400);
+  }
+
+  const release = await env.DB.prepare(`SELECT channel, yanked FROM versions WHERE id = ? AND app_id = ?`)
+    .bind(id, appId)
+    .first<{ channel: string; yanked: number }>();
+  if (!release) return jsonResponse({ error: "not_found" }, 404);
+
+  const target = yanked ? 1 : 0;
+  if (release.yanked === target) return new Response(null, { status: 204 }); // idempotent
+
+  // Same atomic guard as delete: never leave a channel with nothing to serve
+  // (a 404 feed shows every user an "update check failed" error).
+  const result = await env.DB.prepare(
+    `UPDATE versions SET yanked = ?
+     WHERE id = ? AND app_id = ?
+       AND (
+         ? = 0
+         OR (SELECT COUNT(*) FROM versions v2
+             WHERE v2.app_id = versions.app_id AND v2.channel = versions.channel AND v2.yanked = 0) > 1
+       )`
+  )
+    .bind(target, id, appId, target)
+    .run();
+
+  if (result.meta.changes === 0) {
+    return jsonResponse(
+      {
+        error: "conflict",
+        message: `Cannot yank the only live release on channel '${release.channel}' — publish a replacement first.`,
+      },
+      409
+    );
+  }
+
+  if (release.channel === "stable") await purgeAppcastCache(new URL(request.url).origin, appId);
+  return new Response(null, { status: 204 });
+}
+
+// Everything needed to leave: all releases with their signatures and file
+// keys, the app's public key, and (when files_url is given) ready-made
+// appcasts pointing at wherever the files will be hosted next. The CLI's
+// `railcast export` downloads the files and writes all of this to disk.
+async function handleExport(request: Request, env: Env, appId: string): Promise<Response> {
+  const auth = await requireAppOwnership(request, env, appId, "read");
+  if (!auth.ok) return auth.response;
+
+  const url = new URL(request.url);
+  let filesUrl: string | null = null;
+  const rawFilesUrl = url.searchParams.get("files_url");
+  if (rawFilesUrl) {
+    let parsed: URL;
+    try {
+      parsed = new URL(rawFilesUrl);
+    } catch {
+      return jsonResponse({ error: "invalid_input", message: "files_url must be an absolute URL" }, 400);
+    }
+    const local = parsed.hostname === "localhost" || parsed.hostname === "127.0.0.1";
+    if (parsed.protocol !== "https:" && !(parsed.protocol === "http:" && local)) {
+      return jsonResponse({ error: "invalid_input", message: "files_url must be https" }, 400);
+    }
+    filesUrl = rawFilesUrl.replace(/\/+$/, "");
+  }
+
+  const app = await env.DB.prepare(`SELECT id, name, signing_public_key FROM apps WHERE id = ?`)
+    .bind(appId)
+    .first<{ id: string; name: string; signing_public_key: string }>();
+  if (!app) return jsonResponse({ error: "not_found" }, 404);
+
+  const { results } = await env.DB.prepare(
+    `SELECT id, channel, version, build_number, file_key, file_size, sha256, signature,
+            release_notes, critical, phased_rollout_interval, min_system_version, yanked, created_at
+     FROM versions
+     WHERE app_id = ?
+     ORDER BY channel ASC, build_number DESC`
+  )
+    .bind(appId)
+    .all<VersionRow & { id: number; channel: string; yanked: number }>();
+  const releases = results ?? [];
+
+  let appcasts: Record<string, string> | null = null;
+  if (filesUrl) {
+    appcasts = {};
+    const channels = [...new Set(releases.map((r) => r.channel))];
+    for (const channel of channels) {
+      const live = releases.filter((r) => r.channel === channel && r.yanked === 0).slice(0, APPCAST_HISTORY_LIMIT);
+      if (live.length > 0) {
+        appcasts[channel] = renderAppcast(appId, live, filesUrl, filesUrl);
+      }
+    }
+  }
+
+  return jsonResponse({
+    app,
+    public_file_base_url: env.PUBLIC_FILE_BASE_URL,
+    history_limit: APPCAST_HISTORY_LIMIT,
+    releases,
+    appcasts,
+  });
 }
 
 async function handleAppcast(request: Request, env: Env, appId: string): Promise<Response> {
@@ -1618,7 +1747,7 @@ async function handleAppcast(request: Request, env: Env, appId: string): Promise
   const { results } = await env.DB.prepare(
     `SELECT version, build_number, file_key, file_size, sha256, signature, release_notes, critical, phased_rollout_interval, min_system_version, created_at
      FROM versions
-     WHERE app_id = ? AND channel = ?
+     WHERE app_id = ? AND channel = ? AND yanked = 0
      ORDER BY build_number DESC
      LIMIT ?`
   )
@@ -1825,6 +1954,18 @@ async function route(request: Request, env: Env): Promise<Response> {
     if (releaseDeleteMatch && request.method === "DELETE") {
       const [, appId, releaseId] = releaseDeleteMatch;
       return handleDeleteRelease(request, env, appId, releaseId);
+    }
+
+    const releaseYankMatch = url.pathname.match(/^\/([a-zA-Z0-9_-]+)\/releases\/([a-zA-Z0-9_-]+)\/(yank|unyank)$/);
+    if (releaseYankMatch && request.method === "POST") {
+      const [, appId, releaseId, action] = releaseYankMatch;
+      return handleSetYanked(request, env, appId, releaseId, action === "yank");
+    }
+
+    const exportMatch = url.pathname.match(/^\/([a-zA-Z0-9_-]+)\/export$/);
+    if (exportMatch && request.method === "GET") {
+      const [, appId] = exportMatch;
+      return handleExport(request, env, appId);
     }
 
     return new Response("Railcast API is alive", { status: 200 });

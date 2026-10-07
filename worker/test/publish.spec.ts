@@ -1831,3 +1831,130 @@ describe("nightly orphan cleanup", () => {
     expect(await env.BUILDS.head(`${appId}/fresh.zip`)).not.toBeNull();
   });
 });
+
+describe("yank / unyank", () => {
+  async function releaseIds(token: string, appId: string): Promise<Record<string, number>> {
+    const res = await SELF.fetch(`https://railcast.test/${appId}/releases`, { headers: { Authorization: `Bearer ${token}` } });
+    const body = (await res.json()) as { releases: { id: number; version: string }[] };
+    return Object.fromEntries(body.releases.map((r) => [r.version, r.id]));
+  }
+  const post = (token: string, appId: string, id: number, action: "yank" | "unyank") =>
+    SELF.fetch(`https://railcast.test/${appId}/releases/${id}/${action}`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}` },
+    });
+  const feed = async (appId: string) => (await SELF.fetch(`https://railcast.test/${appId}/appcast.xml`)).text();
+
+  it("hides a release from the appcast, and unyank brings it back", async () => {
+    const { token, appId } = await seedUserAppAndToken();
+    await publishVersion(token, appId, "1.0.0", 1);
+    await publishVersion(token, appId, "1.1.0", 2);
+    const ids = await releaseIds(token, appId);
+
+    expect((await post(token, appId, ids["1.1.0"], "yank")).status).toBe(204);
+    const yanked = await feed(appId);
+    expect(yanked).not.toContain("<sparkle:version>2</sparkle:version>");
+    expect(yanked).toContain("<sparkle:version>1</sparkle:version>");
+
+    expect((await post(token, appId, ids["1.1.0"], "unyank")).status).toBe(204);
+    expect(await feed(appId)).toContain("<sparkle:version>2</sparkle:version>");
+  });
+
+  it("is idempotent, and refuses to yank the only live release on a channel", async () => {
+    const { token, appId } = await seedUserAppAndToken();
+    await publishVersion(token, appId, "1.0.0", 1);
+    await publishVersion(token, appId, "1.1.0", 2);
+    const ids = await releaseIds(token, appId);
+
+    expect((await post(token, appId, ids["1.1.0"], "yank")).status).toBe(204);
+    expect((await post(token, appId, ids["1.1.0"], "yank")).status).toBe(204);
+    const last = await post(token, appId, ids["1.0.0"], "yank");
+    expect(last.status).toBe(409);
+    expect(await feed(appId)).toContain("<sparkle:version>1</sparkle:version>");
+  });
+
+  it("lists the flag, keeps build numbers moving, and 404s on unknown ids", async () => {
+    const { token, appId } = await seedUserAppAndToken();
+    await publishVersion(token, appId, "1.0.0", 1);
+    await publishVersion(token, appId, "1.1.0", 2);
+    const ids = await releaseIds(token, appId);
+    await post(token, appId, ids["1.1.0"], "yank");
+
+    const list = (await (await SELF.fetch(`https://railcast.test/${appId}/releases`, { headers: { Authorization: `Bearer ${token}` } })).json()) as {
+      releases: { version: string; yanked: number }[];
+    };
+    expect(list.releases.find((r) => r.version === "1.1.0")!.yanked).toBe(1);
+    expect(list.releases.find((r) => r.version === "1.0.0")!.yanked).toBe(0);
+    expect((await post(token, appId, 999999, "yank")).status).toBe(404);
+  });
+
+  it("needs a publish-scoped token", async () => {
+    const { userId, token, appId } = await seedUserAppAndToken();
+    await publishVersion(token, appId, "1.0.0", 1);
+    await publishVersion(token, appId, "1.1.0", 2);
+    const ids = await releaseIds(token, appId);
+    const readOnly = await seedToken(userId, { scope: "read" });
+    expect((await post(readOnly, appId, ids["1.1.0"], "yank")).status).toBe(403);
+  });
+
+  it("deleting a yanked release is allowed even when it leaves one live release", async () => {
+    const { token, appId } = await seedUserAppAndToken();
+    await publishVersion(token, appId, "1.0.0", 1);
+    await publishVersion(token, appId, "1.1.0", 2);
+    const ids = await releaseIds(token, appId);
+    await post(token, appId, ids["1.1.0"], "yank");
+
+    const del = (id: number) =>
+      SELF.fetch(`https://railcast.test/${appId}/releases/${id}`, { method: "DELETE", headers: { Authorization: `Bearer ${token}` } });
+    expect((await del(ids["1.1.0"])).status).toBe(204);
+    // 1.0.0 is now the only release — the old guard still protects it.
+    expect((await del(ids["1.0.0"])).status).toBe(409);
+  });
+});
+
+describe("export", () => {
+  const exportReq = (token: string, appId: string, qs = "") =>
+    SELF.fetch(`https://railcast.test/${appId}/export${qs}`, { headers: { Authorization: `Bearer ${token}` } });
+
+  it("returns every release with signatures, plus appcasts for the new host", async () => {
+    const { token, appId } = await seedUserAppAndToken();
+    await publishVersion(token, appId, "1.0.0", 1);
+    await publishVersion(token, appId, "1.1.0", 2);
+    const releases = ((await (await SELF.fetch(`https://railcast.test/${appId}/releases`, { headers: { Authorization: `Bearer ${token}` } })).json()) as { releases: { id: number; version: string }[] }).releases;
+    await SELF.fetch(`https://railcast.test/${appId}/releases/${releases.find((r) => r.version === "1.1.0")!.id}/yank`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}` },
+    });
+
+    const res = await exportReq(token, appId, `?files_url=${encodeURIComponent("https://updates.example.com/files/")}`);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as any;
+    expect(body.app.id).toBe(appId);
+    expect(body.app.signing_public_key).toBeTruthy();
+    expect(body.releases).toHaveLength(2); // yanked ones are exported too
+    expect(body.releases.every((r: any) => r.signature && r.file_key && r.sha256)).toBe(true);
+    // The feed excludes the yanked release and points at the new host.
+    expect(body.appcasts.stable).toContain("https://updates.example.com/files/");
+    expect(body.appcasts.stable).toContain("<sparkle:version>1</sparkle:version>");
+    expect(body.appcasts.stable).not.toContain("<sparkle:version>2</sparkle:version>");
+  });
+
+  it("omits appcasts without files_url, and rejects an insecure or malformed one", async () => {
+    const { token, appId } = await seedUserAppAndToken();
+    await publishVersion(token, appId, "1.0.0", 1);
+    expect(((await (await exportReq(token, appId)).json()) as any).appcasts).toBeNull();
+    expect((await exportReq(token, appId, "?files_url=http://example.com/f")).status).toBe(400);
+    expect((await exportReq(token, appId, "?files_url=not-a-url")).status).toBe(400);
+  });
+
+  it("works with a read-only token and refuses other accounts' apps", async () => {
+    const { userId, token, appId } = await seedUserAppAndToken();
+    await publishVersion(token, appId, "1.0.0", 1);
+    const readOnly = await seedToken(userId, { scope: "read" });
+    expect((await exportReq(readOnly, appId)).status).toBe(200);
+
+    const stranger = await seedUserAppAndToken();
+    expect((await exportReq(stranger.token, appId)).status).toBe(403);
+    expect((await SELF.fetch(`https://railcast.test/${appId}/export`)).status).toBe(401);
+  });
+});

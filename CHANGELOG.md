@@ -23,6 +23,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   cleanup` frees space), and a nightly cron deletes R2 objects that were uploaded but never
   registered as a release (older than `ORPHAN_MIN_AGE_SECONDS`, default 24 h).
 
+- Yank: `POST /:appId/releases/:id/yank` and `/unyank` hide a release from the appcast
+  without deleting it (migration `0012_yanked_releases.sql`). Refused for the only live
+  release on a channel. A yanked release can be deleted even if only one live release remains.
+- `GET /:appId/export` returns every release with signatures and file keys, plus appcasts
+  rendered for a new host (`?files_url=`).
+
 ### Changed
 - The public (stable) `appcast.xml` is now actually served from the edge cache (60 s TTL,
   purged in the local data center on publish/delete). It used to send `no-cache`, so every

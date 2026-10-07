@@ -18,7 +18,7 @@ globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
   return realFetch(input, init);
 }) as typeof fetch;
 
-// Mirrors migrations/0001_initial.sql plus the later migrations (0011 adds versions.min_system_version). Kept inline (rather than reading the
+// Mirrors migrations/0001_initial.sql plus the later migrations (0011 adds versions.min_system_version, 0012 versions.yanked). Kept inline (rather than reading the
 // .sql file from disk) because the pool runs this inside the workerd
 // sandbox, which has no filesystem access — if you change the schema,
 // mirror it here too.
@@ -29,7 +29,7 @@ const DDL = [
   `CREATE TABLE email_verifications (token TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id), expires_at INTEGER NOT NULL, used INTEGER NOT NULL DEFAULT 0);`,
   `CREATE TABLE api_tokens (token TEXT PRIMARY KEY, id TEXT, preview TEXT NOT NULL DEFAULT '', user_id TEXT NOT NULL REFERENCES users(id), app_id TEXT REFERENCES apps(id), scope TEXT NOT NULL DEFAULT 'publish', expires_at INTEGER, last_used_at INTEGER, created_at INTEGER NOT NULL);`,
   `CREATE TABLE apps (id TEXT PRIMARY KEY, name TEXT NOT NULL DEFAULT '', owner_email TEXT NOT NULL, owner_user_id TEXT REFERENCES users(id), signing_public_key TEXT NOT NULL, beta_token TEXT, created_at INTEGER NOT NULL);`,
-  `CREATE TABLE versions (id INTEGER PRIMARY KEY AUTOINCREMENT, app_id TEXT NOT NULL REFERENCES apps(id), channel TEXT NOT NULL DEFAULT 'stable', version TEXT NOT NULL, build_number INTEGER NOT NULL, file_key TEXT NOT NULL, file_size INTEGER NOT NULL, sha256 TEXT NOT NULL, signature TEXT NOT NULL, release_notes TEXT, critical INTEGER NOT NULL DEFAULT 0, phased_rollout_interval INTEGER, min_system_version TEXT, created_at INTEGER NOT NULL);`,
+  `CREATE TABLE versions (id INTEGER PRIMARY KEY AUTOINCREMENT, app_id TEXT NOT NULL REFERENCES apps(id), channel TEXT NOT NULL DEFAULT 'stable', version TEXT NOT NULL, build_number INTEGER NOT NULL, file_key TEXT NOT NULL, file_size INTEGER NOT NULL, sha256 TEXT NOT NULL, signature TEXT NOT NULL, release_notes TEXT, critical INTEGER NOT NULL DEFAULT 0, phased_rollout_interval INTEGER, min_system_version TEXT, yanked INTEGER NOT NULL DEFAULT 0, created_at INTEGER NOT NULL);`,
   `CREATE INDEX idx_versions_app_channel ON versions(app_id, channel, build_number DESC);`,
   `CREATE TABLE rate_limit_hits (bucket TEXT NOT NULL, created_at INTEGER NOT NULL);`,
   `CREATE INDEX idx_rate_limit_bucket_time ON rate_limit_hits(bucket, created_at);`,
