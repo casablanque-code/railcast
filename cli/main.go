@@ -33,6 +33,8 @@ func main() {
 		cmdYank(os.Args[2:])
 	case "export":
 		cmdExport(os.Args[2:])
+	case "redirect":
+		cmdRedirect(os.Args[2:])
 	case "version", "--version", "-v":
 		fmt.Println("railcast", version)
 	case "help", "--help", "-h":
@@ -107,6 +109,12 @@ Usage:
       signatures and metadata (releases.json), and — with --files-url,
       where you'll host the files — ready-made appcast XML for that host.
       Nothing about your releases is stuck here.
+
+  railcast redirect --to <url> | --clear     (no flags: show the current state)
+      Moving to your own host? Installed copies keep asking the feed URL
+      they shipped with — this makes it answer with a redirect to the new
+      feed, so they follow you without a new release. The target is
+      fetched first and must look like an appcast. Reversible with --clear.
 
   railcast keygen        Generate a signing key without creating an app
   railcast version        Print the CLI version

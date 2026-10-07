@@ -17,6 +17,7 @@ type appSummary struct {
 	Name             string `json:"name"`
 	SigningPublicKey string `json:"signing_public_key"`
 	BetaToken        string `json:"beta_token"`
+	FeedRedirectURL  string `json:"feed_redirect_url"` // empty unless the app has moved
 	CreatedAt        int64  `json:"created_at"`
 }
 
