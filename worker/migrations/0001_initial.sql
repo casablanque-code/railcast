@@ -1,12 +1,11 @@
--- Squashed schema for the open-source release. Replaces the old
--- 0001 (schema.sql) .. 0012 migration chain, which is why you won't find
--- files with those names anymore — this repo has no production history to
--- preserve, so there's no reason to make new clones replay 12 steps
--- (several of which added a payment/early-access gate, and later ones
--- removed it again) just to get a fresh database. If you're upgrading an
--- existing deployment that already ran the old chain, see the note in
--- README/CHANGELOG instead of applying this file — it will collide with
--- tables that already exist.
+-- Baseline schema. Migrations 0002-0006 don't exist: they were folded into
+-- this file when the old migration chain was squashed for the open-source
+-- release (that chain also added and later removed a payment/early-access
+-- gate). Later migrations (0007 and up) apply on top of this one, in order —
+-- `wrangler d1 migrations apply` does that for a fresh database.
+--
+-- Upgrading a deployment that already ran the OLD chain? Don't apply this
+-- file: it would collide with tables that already exist.
 
 CREATE TABLE users (
   id TEXT PRIMARY KEY,
