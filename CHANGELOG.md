@@ -32,6 +32,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `railcast yank <version> [--undo]` and `railcast export --out <dir> [--files-url <url>]`.
   `railcast list` marks yanked releases; `railcast cleanup` ignores them.
 
+- Feed redirect: `PUT /:appId/feed-redirect` makes an app's appcast answer 302 to a new
+  feed URL (migration `0013_feed_redirect.sql`), so installed copies can follow you to a
+  new host without a new release. Beta feeds map to `appcast-<channel>.xml` next to it.
+  `GET /api/apps` and the export include `feed_redirect_url`.
+
 ### Changed
 - Release notes are now marked `sparkle:format="markdown"` in the appcast, as the README
   always promised (Sparkle 2.9+, macOS 12+; older clients show the text unformatted). Notes

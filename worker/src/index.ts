@@ -773,19 +773,27 @@ async function handleApiListApps(request: Request, env: Env): Promise<Response> 
   // (ids, names) of apps that token has no business knowing about.
   const scopedAppId = identity?.appId ?? null;
 
+  type AppListRow = {
+    id: string;
+    name: string;
+    signing_public_key: string;
+    beta_token: string;
+    feed_redirect_url: string | null;
+    created_at: number;
+  };
   const { results } = scopedAppId
     ? await env.DB.prepare(
-        `SELECT id, name, signing_public_key, beta_token, created_at FROM apps
+        `SELECT id, name, signing_public_key, beta_token, feed_redirect_url, created_at FROM apps
          WHERE owner_user_id = ? AND id = ? ORDER BY created_at DESC`
       )
         .bind(userId, scopedAppId)
-        .all<{ id: string; name: string; signing_public_key: string; beta_token: string; created_at: number }>()
+        .all<AppListRow>()
     : await env.DB.prepare(
-        `SELECT id, name, signing_public_key, beta_token, created_at FROM apps
+        `SELECT id, name, signing_public_key, beta_token, feed_redirect_url, created_at FROM apps
          WHERE owner_user_id = ? ORDER BY created_at DESC`
       )
         .bind(userId)
-        .all<{ id: string; name: string; signing_public_key: string; beta_token: string; created_at: number }>();
+        .all<AppListRow>();
 
   return jsonResponse({ apps: results ?? [] });
 }
@@ -1682,9 +1690,9 @@ async function handleExport(request: Request, env: Env, appId: string): Promise<
     filesUrl = rawFilesUrl.replace(/\/+$/, "");
   }
 
-  const app = await env.DB.prepare(`SELECT id, name, signing_public_key FROM apps WHERE id = ?`)
+  const app = await env.DB.prepare(`SELECT id, name, signing_public_key, feed_redirect_url FROM apps WHERE id = ?`)
     .bind(appId)
-    .first<{ id: string; name: string; signing_public_key: string }>();
+    .first<{ id: string; name: string; signing_public_key: string; feed_redirect_url: string | null }>();
   if (!app) return jsonResponse({ error: "not_found" }, 404);
 
   const { results } = await env.DB.prepare(
@@ -1719,6 +1727,75 @@ async function handleExport(request: Request, env: Env, appId: string): Promise<
   });
 }
 
+// Where a feed request for `channel` goes when the app has moved. Stable maps
+// to the URL as given. Other channels map to appcast-<channel>.xml next to it
+// (the names `railcast export` writes) when the URL ends in /appcast.xml;
+// otherwise there is no mapping and the channel is served from here as before.
+function redirectTargetFor(base: string, channel: string): string | null {
+  if (channel === "stable") return base;
+  if (!/^[A-Za-z0-9_-]{1,32}$/.test(channel)) return null;
+  let u: URL;
+  try {
+    u = new URL(base);
+  } catch {
+    return null;
+  }
+  if (!u.pathname.endsWith("/appcast.xml")) return null;
+  u.pathname = u.pathname.slice(0, -"appcast.xml".length) + `appcast-${channel}.xml`;
+  return u.toString();
+}
+
+// PUT /:appId/feed-redirect  {"url": "https://..."}  or  {"url": null}
+//
+// The feed URL is baked into every installed copy (SUFeedURL), so leaving a
+// host means those copies must be told, from the old URL, where to go. With a
+// redirect set, this app's appcast answers 302 to the new feed instead of
+// serving one; clearing it restores normal behavior. 302 rather than 301 so it
+// stays reversible: nothing gets cached "forever" by a client.
+async function handleSetFeedRedirect(request: Request, env: Env, appId: string): Promise<Response> {
+  const auth = await requireAppOwnership(request, env, appId, "publish", { allowSession: true });
+  if (!auth.ok) return auth.response;
+  const requestUrl = new URL(request.url);
+  if (!hasValidOrigin(request, requestUrl.origin)) {
+    return jsonResponse({ error: "bad_origin" }, 403);
+  }
+
+  let body: { url?: unknown };
+  try {
+    body = (await request.json()) as { url?: unknown };
+  } catch {
+    return jsonResponse({ error: "invalid_input", message: "body must be JSON like {\"url\": \"https://...\"}" }, 400);
+  }
+
+  let target: string | null = null;
+  if (body.url !== null) {
+    if (typeof body.url !== "string" || body.url.length === 0 || body.url.length > 2048) {
+      return jsonResponse({ error: "invalid_input", message: "url must be a string up to 2048 characters, or null to clear" }, 400);
+    }
+    let parsed: URL;
+    try {
+      parsed = new URL(body.url);
+    } catch {
+      return jsonResponse({ error: "invalid_input", message: "url must be an absolute URL" }, 400);
+    }
+    const local = parsed.hostname === "localhost" || parsed.hostname === "127.0.0.1";
+    if (parsed.protocol !== "https:" && !(parsed.protocol === "http:" && local)) {
+      return jsonResponse({ error: "invalid_input", message: "url must be https" }, 400);
+    }
+    if (parsed.username || parsed.password) {
+      return jsonResponse({ error: "invalid_input", message: "url must not contain credentials" }, 400);
+    }
+    if (parsed.hostname === requestUrl.hostname) {
+      return jsonResponse({ error: "invalid_input", message: "url points back at this server — that would loop" }, 400);
+    }
+    target = parsed.toString();
+  }
+
+  await env.DB.prepare(`UPDATE apps SET feed_redirect_url = ? WHERE id = ?`).bind(target, appId).run();
+  await purgeAppcastCache(requestUrl.origin, appId);
+  return jsonResponse({ feed_redirect_url: target });
+}
+
 async function handleAppcast(request: Request, env: Env, appId: string): Promise<Response> {
   const url = new URL(request.url);
   const channel = url.searchParams.get("channel") ?? "stable";
@@ -1736,20 +1813,44 @@ async function handleAppcast(request: Request, env: Env, appId: string): Promise
     }
   }
 
+  const appRow = await env.DB.prepare(`SELECT beta_token, feed_redirect_url FROM apps WHERE id = ?`)
+    .bind(appId)
+    .first<{ beta_token: string | null; feed_redirect_url: string | null }>();
+
   // Non-stable channels need the app's beta token — the channel name
   // itself isn't a secret, so without this anyone who finds the (opaque,
   // but now-published) appcast URL could also read the beta feed.
   if (channel !== "stable") {
-    const appRow = await env.DB.prepare(`SELECT beta_token FROM apps WHERE id = ?`)
-      .bind(appId)
-      .first<{ beta_token: string | null }>();
-
     const suppliedToken = url.searchParams.get("token") ?? "";
     if (!appRow || !appRow.beta_token || !timingSafeEqualHex(suppliedToken, appRow.beta_token)) {
       // Same 404 as "not found" — don't reveal whether the app/channel
       // exists to someone without the token.
       return new Response("Not found", { status: 404 });
     }
+  }
+
+  // The app moved: installed copies keep asking the URL they shipped with, so
+  // answer with a redirect to the new feed instead (see handleSetFeedRedirect).
+  // Checked after the beta-token gate so a redirect never leaks to someone who
+  // couldn't have read that feed anyway.
+  const redirectTo = appRow?.feed_redirect_url ? redirectTargetFor(appRow.feed_redirect_url, channel) : null;
+  if (redirectTo) {
+    const redirect = new Response("Moved", {
+      status: 302,
+      headers: {
+        Location: redirectTo,
+        "Content-Type": "text/plain; charset=utf-8",
+        "Cache-Control": cacheable ? `public, max-age=${APPCAST_EDGE_TTL_SECONDS}` : "private, no-store",
+      },
+    });
+    if (cacheable) {
+      try {
+        await caches.default.put(cacheKey, redirect.clone());
+      } catch {
+        // best effort
+      }
+    }
+    return redirect;
   }
 
   const { results } = await env.DB.prepare(
@@ -1968,6 +2069,12 @@ async function route(request: Request, env: Env): Promise<Response> {
     if (releaseYankMatch && request.method === "POST") {
       const [, appId, releaseId, action] = releaseYankMatch;
       return handleSetYanked(request, env, appId, releaseId, action === "yank");
+    }
+
+    const feedRedirectMatch = url.pathname.match(/^\/([a-zA-Z0-9_-]+)\/feed-redirect$/);
+    if (feedRedirectMatch && request.method === "PUT") {
+      const [, appId] = feedRedirectMatch;
+      return handleSetFeedRedirect(request, env, appId);
     }
 
     const exportMatch = url.pathname.match(/^\/([a-zA-Z0-9_-]+)\/export$/);

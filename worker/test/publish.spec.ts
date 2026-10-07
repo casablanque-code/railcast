@@ -1989,3 +1989,81 @@ describe("release notes format", () => {
     expect(await feedWithNotes(undefined)).not.toContain("<description");
   });
 });
+
+describe("feed redirect", () => {
+  const put = (token: string, appId: string, body: unknown) =>
+    SELF.fetch(`https://railcast.test/${appId}/feed-redirect`, {
+      method: "PUT",
+      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+  const get = (appId: string, qs = "") =>
+    SELF.fetch(`https://railcast.test/${appId}/appcast.xml${qs}`, { redirect: "manual" });
+
+  it("redirects the stable feed once set, and serves normally again when cleared", async () => {
+    const { token, appId } = await seedUserAppAndToken();
+    await publishVersion(token, appId, "1.0.0", 1);
+    expect((await get(appId)).status).toBe(200); // primes the cache
+
+    const set = await put(token, appId, { url: "https://updates.example.com/myapp/appcast.xml" });
+    expect(set.status).toBe(200);
+    const moved = await get(appId);
+    expect(moved.status).toBe(302);
+    expect(moved.headers.get("Location")).toBe("https://updates.example.com/myapp/appcast.xml");
+
+    expect((await put(token, appId, { url: null })).status).toBe(200);
+    expect((await get(appId)).status).toBe(200);
+  });
+
+  it("redirects a beta feed to appcast-<channel>.xml, only with a valid token", async () => {
+    const { token, appId } = await seedUserAppAndToken();
+    await env.DB.prepare(`UPDATE apps SET beta_token = ? WHERE id = ?`).bind("beta-secret", appId).run();
+    await put(token, appId, { url: "https://updates.example.com/myapp/appcast.xml" });
+
+    const ok = await get(appId, "?channel=beta&token=beta-secret");
+    expect(ok.status).toBe(302);
+    expect(ok.headers.get("Location")).toBe("https://updates.example.com/myapp/appcast-beta.xml");
+    expect(ok.headers.get("Cache-Control")).toContain("no-store");
+    expect((await get(appId, "?channel=beta&token=wrong")).status).toBe(404);
+  });
+
+  it("doesn't redirect beta when the target isn't named appcast.xml", async () => {
+    const { token, appId } = await seedUserAppAndToken();
+    await publishVersion(token, appId, "1.0.0", 1);
+    await env.DB.prepare(`UPDATE apps SET beta_token = ? WHERE id = ?`).bind("beta-secret", appId).run();
+    await put(token, appId, { url: "https://updates.example.com/feed.xml" });
+    expect((await get(appId)).status).toBe(302);
+    // No mapping for beta: falls through to the normal (here: empty) beta feed.
+    expect((await get(appId, "?channel=beta&token=beta-secret")).status).toBe(404);
+  });
+
+  it("rejects insecure, credentialed, malformed and self-pointing targets", async () => {
+    const { token, appId } = await seedUserAppAndToken();
+    for (const bad of [
+      "http://example.com/appcast.xml",
+      "https://user:pw@example.com/appcast.xml",
+      "not a url",
+      "https://railcast.test/other/appcast.xml",
+      "",
+      42,
+    ]) {
+      expect((await put(token, appId, { url: bad })).status).toBe(400);
+    }
+    expect((await SELF.fetch(`https://railcast.test/${appId}/feed-redirect`, {
+      method: "PUT", headers: { Authorization: `Bearer ${token}` }, body: "nope",
+    })).status).toBe(400);
+  });
+
+  it("needs a publish-scoped token for this app, and shows up in the app list", async () => {
+    const { userId, token, appId } = await seedUserAppAndToken();
+    const readOnly = await seedToken(userId, { scope: "read" });
+    expect((await put(readOnly, appId, { url: "https://updates.example.com/appcast.xml" })).status).toBe(403);
+    expect((await SELF.fetch(`https://railcast.test/${appId}/feed-redirect`, { method: "PUT", body: "{}" })).status).toBe(401);
+
+    await put(token, appId, { url: "https://updates.example.com/appcast.xml" });
+    const list = (await (await SELF.fetch("https://railcast.test/api/apps", { headers: { Authorization: `Bearer ${token}` } })).json()) as {
+      apps: { id: string; feed_redirect_url: string | null }[];
+    };
+    expect(list.apps.find((a) => a.id === appId)!.feed_redirect_url).toBe("https://updates.example.com/appcast.xml");
+  });
+});
