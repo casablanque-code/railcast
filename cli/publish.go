@@ -261,7 +261,7 @@ func loadPrivateKey(path string) (ed25519.PrivateKey, error) {
 		}
 		decoded, err := base64.StdEncoding.DecodeString(line)
 		if err != nil {
-			continue // не base64 — просто текст пояснения, пропускаем
+			continue // not base64 (a label or other text) — skip
 		}
 		if len(decoded) == ed25519.PrivateKeySize {
 			return ed25519.PrivateKey(decoded), nil
