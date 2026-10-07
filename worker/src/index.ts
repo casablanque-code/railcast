@@ -32,6 +32,7 @@ interface VersionRow {
   release_notes: string | null;
   critical: number;
   phased_rollout_interval: number | null;
+  min_system_version: string | null;
   created_at: number;
 }
 
@@ -42,6 +43,8 @@ interface VersionRow {
 // this number from the server instead of hardcoding its own guess — the
 // two can never drift apart and quietly disagree about what "old" means.
 const APPCAST_HISTORY_LIMIT = 10;
+
+const MIN_SYSTEM_VERSION_RE = /^\d{1,3}(\.\d{1,3}){0,2}$/;
 
 // How long the public (stable) appcast may be served from the edge cache.
 // Sparkle clients poll at most every few hours, so a minute of staleness is
@@ -106,6 +109,9 @@ function renderAppcast(
         ? `\n      <description><![CDATA[${safeCData(r.release_notes)}]]></description>`
         : "";
       const critical = r.critical ? `\n      <sparkle:criticalUpdate/>` : "";
+      const minSystemVersion = r.min_system_version
+        ? `\n      <sparkle:minimumSystemVersion>${escapeXml(r.min_system_version)}</sparkle:minimumSystemVersion>`
+        : "";
       const phasedRollout =
         r.phased_rollout_interval != null
           ? `\n      <sparkle:phasedRolloutInterval>${r.phased_rollout_interval}</sparkle:phasedRolloutInterval>`
@@ -114,7 +120,7 @@ function renderAppcast(
       <title>Version ${escapeXml(r.version)}</title>
       <pubDate>${pubDate}</pubDate>
       <sparkle:version>${r.build_number}</sparkle:version>
-      <sparkle:shortVersionString>${escapeXml(r.version)}</sparkle:shortVersionString>${description}${critical}${phasedRollout}
+      <sparkle:shortVersionString>${escapeXml(r.version)}</sparkle:shortVersionString>${minSystemVersion}${description}${critical}${phasedRollout}
       <enclosure
         url="${escapeXml(downloadUrl)}"
         length="${r.file_size}"
@@ -1228,6 +1234,9 @@ interface CreateVersionBody {
   release_notes?: string;
   critical?: boolean;
   phased_rollout_interval?: number;
+  // macOS version the build needs, e.g. "13.0" — Sparkle hides the update
+  // from older systems instead of offering one that can't launch.
+  min_system_version?: string;
 }
 
 async function handleCreateVersion(request: Request, env: Env, appId: string): Promise<Response> {
@@ -1245,6 +1254,7 @@ async function handleCreateVersion(request: Request, env: Env, appId: string): P
   const channel = body.channel ?? "stable";
   const critical = body.critical ? 1 : 0;
   const phasedRolloutInterval = body.phased_rollout_interval;
+  const minSystemVersion = body.min_system_version ?? null;
 
   if (!version || !file_key || !file_size || !sha256 || !signature) {
     return new Response(
@@ -1265,6 +1275,10 @@ async function handleCreateVersion(request: Request, env: Env, appId: string): P
 
   if (!SHA256_HEX_RE.test(sha256)) {
     return new Response("sha256 must be 64 hex characters", { status: 400 });
+  }
+
+  if (minSystemVersion !== null && !MIN_SYSTEM_VERSION_RE.test(minSystemVersion)) {
+    return new Response('min_system_version must look like "13", "13.0" or "13.0.1"', { status: 400 });
   }
 
   if (
@@ -1347,10 +1361,10 @@ async function handleCreateVersion(request: Request, env: Env, appId: string): P
   // a concurrent publish the way a separate SELECT-then-INSERT could.
   const inserted = await env.DB.prepare(
     `INSERT INTO versions
-      (app_id, channel, version, build_number, file_key, file_size, sha256, signature, release_notes, critical, phased_rollout_interval, created_at)
+      (app_id, channel, version, build_number, file_key, file_size, sha256, signature, release_notes, critical, phased_rollout_interval, min_system_version, created_at)
      SELECT ?, ?, ?,
        COALESCE(?, (SELECT COALESCE(MAX(build_number), 0) FROM versions WHERE app_id = ? AND channel = ?) + 1),
-       ?, ?, ?, ?, ?, ?, ?, ?
+       ?, ?, ?, ?, ?, ?, ?, ?, ?
      RETURNING id, build_number`
   )
     .bind(
@@ -1367,6 +1381,7 @@ async function handleCreateVersion(request: Request, env: Env, appId: string): P
       release_notes ?? null,
       critical,
       phasedRolloutInterval ?? null,
+      minSystemVersion,
       createdAt
     )
     .first<{ id: number; build_number: number }>();
@@ -1556,7 +1571,7 @@ async function handleAppcast(request: Request, env: Env, appId: string): Promise
   }
 
   const { results } = await env.DB.prepare(
-    `SELECT version, build_number, file_key, file_size, sha256, signature, release_notes, critical, phased_rollout_interval, created_at
+    `SELECT version, build_number, file_key, file_size, sha256, signature, release_notes, critical, phased_rollout_interval, min_system_version, created_at
      FROM versions
      WHERE app_id = ? AND channel = ?
      ORDER BY build_number DESC

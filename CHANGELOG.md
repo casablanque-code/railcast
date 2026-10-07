@@ -13,6 +13,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   signing key (64-byte key or 32-byte seed), so installed copies keep trusting updates.
   README has the migration steps.
 
+- `sparkle:minimumSystemVersion` support: `railcast publish` reads `LSMinimumSystemVersion`
+  from the `.app`'s Info.plist (override with `--min-system-version`), and the feed carries
+  it, so Macs that can't run a build are never offered it. Needs migration
+  `0011_min_system_version.sql` (`wrangler d1 migrations apply`).
+
 ### Changed
 - The public (stable) `appcast.xml` is now actually served from the edge cache (60 s TTL,
   purged in the local data center on publish/delete). It used to send `no-cache`, so every

@@ -19,6 +19,9 @@ import (
 type bundleInfo struct {
 	ShortVersion string // CFBundleShortVersionString, e.g. "2.0.0"
 	BuildNumber  int    // CFBundleVersion, e.g. "42"
+	// LSMinimumSystemVersion, e.g. "13.0". Empty when the app doesn't declare
+	// one — optional, unlike the two fields above.
+	MinSystemVersion string
 }
 
 // readBundleInfoFromZip looks for a top-level "<Name>.app/Contents/Info.plist"
@@ -81,7 +84,15 @@ func readBundleInfoFromZip(zipPath string) (*bundleInfo, error) {
 		)
 	}
 
-	return &bundleInfo{ShortVersion: strings.TrimSpace(shortVersion), BuildNumber: build}, nil
+	// Optional key: a missing LSMinimumSystemVersion just means "no minimum".
+	// (A PlistBuddy failure on the keys above already ruled out "not on macOS".)
+	minSystem, _ := readPlistValue(tmp.Name(), "LSMinimumSystemVersion")
+
+	return &bundleInfo{
+		ShortVersion:     strings.TrimSpace(shortVersion),
+		BuildNumber:      build,
+		MinSystemVersion: strings.TrimSpace(minSystem),
+	}, nil
 }
 
 func readPlistValue(plistPath, key string) (string, error) {

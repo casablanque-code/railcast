@@ -38,7 +38,7 @@ func cmdPublish(args []string) {
 
 	fs := flag.NewFlagSet("publish", flag.ExitOnError)
 
-	var appID, filePath, version, channel, notes, notesFile, keyPath, token, baseURL string
+	var appID, filePath, version, channel, notes, notesFile, keyPath, token, baseURL, minSystemVersion string
 	var buildNumber, phasedRollout int
 	var critical bool
 
@@ -61,6 +61,8 @@ func cmdPublish(args []string) {
 	fs.StringVar(&notesFile, "notes-file", "", "path to a release notes file (overrides --notes)")
 	fs.BoolVar(&critical, "critical", false, "mark this update as critical (Sparkle: sparkle:criticalUpdate)")
 	fs.IntVar(&phasedRollout, "phased-rollout", 0, "phased rollout interval in seconds between install groups, 0 to disable (Sparkle: sparkle:phasedRolloutInterval)")
+
+	fs.StringVar(&minSystemVersion, "min-system-version", "", "lowest macOS version this build runs on, e.g. 13.0 — defaults to LSMinimumSystemVersion from the .app's Info.plist (Sparkle: sparkle:minimumSystemVersion)")
 
 	fs.StringVar(&keyPath, "key", keyDefault, "path to the private signing key — defaults to the one from 'railcast init' in this directory")
 	fs.StringVar(&keyPath, "k", keyDefault, "shorthand for --key")
@@ -185,6 +187,12 @@ func cmdPublish(args []string) {
 		}
 	}
 
+	minSystemSource := "--min-system-version"
+	if minSystemVersion == "" && detected != nil && detected.MinSystemVersion != "" {
+		minSystemVersion = detected.MinSystemVersion
+		minSystemSource = "detected from Info.plist"
+	}
+
 	// One box, printed once, before anything touches the network: exactly
 	// what's about to be published and why each value is what it is. This
 	// is the single place meant to answer "what will happen if I run this
@@ -199,6 +207,9 @@ func cmdPublish(args []string) {
 		planLines = append(planLines, fmt.Sprintf("build:   %d (%s)", effectiveBuild, buildSource))
 	} else {
 		planLines = append(planLines, "build:   auto-assigned by Railcast on publish")
+	}
+	if minSystemVersion != "" {
+		planLines = append(planLines, fmt.Sprintf("macOS:   %s or newer (%s)", minSystemVersion, minSystemSource))
 	}
 	planLines = append(planLines, fmt.Sprintf("sha256:  %s", sha256Hex))
 	if critical {
@@ -236,19 +247,20 @@ func cmdPublish(args []string) {
 
 	fmt.Println("[2/2] Registering version...")
 	result, err := doCreateVersion(createVersionRequest{
-		BaseURL:       baseURL,
-		Token:         token,
-		AppID:         appID,
-		Version:       version,
-		BuildNumber:   effectiveBuild,
-		Channel:       channel,
-		FileKey:       upload.FileKey,
-		FileSize:      upload.FileSize,
-		SHA256:        sha256Hex,
-		Signature:     signatureB64,
-		Notes:         notes,
-		Critical:      critical,
-		PhasedRollout: phasedRollout,
+		BaseURL:          baseURL,
+		Token:            token,
+		AppID:            appID,
+		Version:          version,
+		BuildNumber:      effectiveBuild,
+		Channel:          channel,
+		FileKey:          upload.FileKey,
+		FileSize:         upload.FileSize,
+		SHA256:           sha256Hex,
+		Signature:        signatureB64,
+		Notes:            notes,
+		Critical:         critical,
+		PhasedRollout:    phasedRollout,
+		MinSystemVersion: minSystemVersion,
 	})
 	if err != nil {
 		fail("registering version failed: %v", err)
@@ -404,6 +416,8 @@ type createVersionRequest struct {
 	Notes         string
 	Critical      bool
 	PhasedRollout int
+	// Omitted from the request when empty.
+	MinSystemVersion string
 }
 
 func doCreateVersion(r createVersionRequest) (*createVersionResponse, error) {
@@ -426,6 +440,9 @@ func doCreateVersion(r createVersionRequest) (*createVersionResponse, error) {
 	}
 	if r.PhasedRollout > 0 {
 		payload["phased_rollout_interval"] = r.PhasedRollout
+	}
+	if r.MinSystemVersion != "" {
+		payload["min_system_version"] = r.MinSystemVersion
 	}
 	body, err := json.Marshal(payload)
 	if err != nil {

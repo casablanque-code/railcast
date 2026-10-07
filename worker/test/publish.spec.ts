@@ -1714,3 +1714,38 @@ describe("appcast edge cache", () => {
     expect(await (await SELF.fetch(url)).text()).toContain("<sparkle:version>2</sparkle:version>");
   });
 });
+
+describe("min_system_version", () => {
+  async function publishWithMin(token: string, appId: string, version: string, build: number, min?: string) {
+    const { file_key, file_size, sha256 } = await uploadBuild(token, appId, `MyApp-${version}.zip`, `bytes ${version}`);
+    return SELF.fetch(`https://railcast.test/${appId}/versions`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+      body: JSON.stringify({
+        version, build_number: build, file_key, file_size, sha256, signature: "sig",
+        ...(min === undefined ? {} : { min_system_version: min }),
+      }),
+    });
+  }
+
+  it("is served as sparkle:minimumSystemVersion when given", async () => {
+    const { token, appId } = await seedUserAppAndToken();
+    expect((await publishWithMin(token, appId, "1.0.0", 1, "13.0")).status).toBe(201);
+    const xml = await (await SELF.fetch(`https://railcast.test/${appId}/appcast.xml`)).text();
+    expect(xml).toContain("<sparkle:minimumSystemVersion>13.0</sparkle:minimumSystemVersion>");
+  });
+
+  it("is omitted when not given", async () => {
+    const { token, appId } = await seedUserAppAndToken();
+    expect((await publishWithMin(token, appId, "1.0.0", 1)).status).toBe(201);
+    const xml = await (await SELF.fetch(`https://railcast.test/${appId}/appcast.xml`)).text();
+    expect(xml).not.toContain("minimumSystemVersion");
+  });
+
+  it("rejects values that aren't a dotted version", async () => {
+    const { token, appId } = await seedUserAppAndToken();
+    for (const bad of ["", "latest", "13.0.0.1", "13.x", "<b>"]) {
+      expect((await publishWithMin(token, appId, "1.0.0", 1, bad)).status).toBe(400);
+    }
+  });
+});

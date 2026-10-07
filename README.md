@@ -104,6 +104,7 @@ Optional flags for either a first publish or an update:
 | `--channel beta` | `-c` | Publishes to a separate channel instead of `stable`. Build-number ordering is tracked per channel, independently. |
 | `--notes "…"` | | Plain text or Markdown release notes, shown in Sparkle's update dialog. |
 | `--notes-file path` | | Same, read from a file — overrides `--notes` if both are given. |
+| `--min-system-version <v>` | | Lowest macOS version the build runs on, e.g. `13.0` (`sparkle:minimumSystemVersion`). Detected from `LSMinimumSystemVersion` in the `.app`'s `Info.plist` for a `.zip`. |
 | `--critical` | | Marks the update as critical (`sparkle:criticalUpdate`) — Sparkle won't let the user postpone it. |
 | `--phased-rollout <seconds>` | | Staggers the rollout to installed clients (`sparkle:phasedRolloutInterval`). `0` (default) disables it. |
 

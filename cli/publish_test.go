@@ -4,6 +4,7 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/base64"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -227,5 +228,35 @@ func TestCheckKeyMatchesApp(t *testing.T) {
 	}
 	if err := checkKeyMatchesApp(apps, "unknown", other); err != nil {
 		t.Fatalf("unknown app should be left to the upload step, got: %v", err)
+	}
+}
+
+func TestDoCreateVersion_SendsMinSystemVersionOnlyWhenSet(t *testing.T) {
+	var got map[string]interface{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got = map[string]interface{}{}
+		if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
+			t.Fatalf("failed to decode request body: %v", err)
+		}
+		w.WriteHeader(http.StatusCreated)
+		w.Write([]byte(`{"app_id":"a","channel":"stable","version":"1.0.0","build_number":1,"appcast_url":"/a/appcast.xml"}`))
+	}))
+	defer srv.Close()
+
+	base := createVersionRequest{BaseURL: srv.URL, Token: "t", AppID: "a", Version: "1.0.0", Channel: "stable"}
+
+	if _, err := doCreateVersion(base); err != nil {
+		t.Fatalf("doCreateVersion returned an error: %v", err)
+	}
+	if _, ok := got["min_system_version"]; ok {
+		t.Fatalf("min_system_version must be omitted when empty, got %v", got)
+	}
+
+	base.MinSystemVersion = "13.0"
+	if _, err := doCreateVersion(base); err != nil {
+		t.Fatalf("doCreateVersion returned an error: %v", err)
+	}
+	if got["min_system_version"] != "13.0" {
+		t.Fatalf("expected min_system_version 13.0, got %v", got["min_system_version"])
 	}
 }
