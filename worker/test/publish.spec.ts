@@ -1795,7 +1795,8 @@ describe("abuse limits", () => {
     const { userId, token, appId } = await seedUserAppAndToken();
     const now = Math.floor(Date.now() / 1000);
     const stmt = env.DB.prepare(`INSERT INTO rate_limit_hits (bucket, created_at) VALUES (?, ?)`);
-    await env.DB.batch(Array.from({ length: 60 }, () => stmt.bind(`upload:user:${userId}`, now)));
+    const bucket = await sha256Hex(`upload:user:${userId}`);
+    await env.DB.batch(Array.from({ length: 60 }, () => stmt.bind(bucket, now)));
 
     const res = await put(token, appId, "one.zip", "hello");
     expect(res.status).toBe(429);
@@ -2065,5 +2066,37 @@ describe("feed redirect", () => {
       apps: { id: string; feed_redirect_url: string | null }[];
     };
     expect(list.apps.find((a) => a.id === appId)!.feed_redirect_url).toBe("https://updates.example.com/appcast.xml");
+  });
+});
+
+describe("rate limiter", () => {
+  // Distinct CF-Connecting-IP per request keeps the per-IP bucket out of the way,
+  // so only the per-email bucket (10 login attempts/hour) is under test.
+  const attempt = (email: string, i: number) =>
+    SELF.fetch("https://railcast.test/auth/login", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "CF-Connecting-IP": `203.0.113.${i + 1}` },
+      body: JSON.stringify({ email, password: "wrong-password" }),
+    });
+
+  it("lets exactly `limit` concurrent requests through, never more", async () => {
+    const email = `race-${crypto.randomUUID()}@example.com`;
+    const statuses = (await Promise.all(Array.from({ length: 30 }, (_, i) => attempt(email, i)))).map((r) => r.status);
+    expect(statuses.filter((s) => s === 429)).toHaveLength(20);
+    expect(statuses.filter((s) => s !== 429)).toHaveLength(10);
+  });
+
+  it("stores hashed buckets only, and rejected attempts aren't recorded", async () => {
+    const email = `hashed-${crypto.randomUUID()}@example.com`;
+    for (let i = 0; i < 12; i++) await attempt(email, i);
+
+    const { results } = await env.DB.prepare(`SELECT bucket FROM rate_limit_hits`).all<{ bucket: string }>();
+    const buckets = (results ?? []).map((r) => r.bucket);
+    expect(buckets.some((b) => b.includes(email) || b.includes("203.0.113"))).toBe(false);
+
+    const count = await env.DB.prepare(`SELECT COUNT(*) AS c FROM rate_limit_hits WHERE bucket = ?`)
+      .bind(await sha256Hex(`authlogin:email:${email}`))
+      .first<{ c: number }>();
+    expect(count!.c).toBe(10); // 12 attempts, the 2 rejected ones left no row
   });
 });

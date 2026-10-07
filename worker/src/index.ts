@@ -257,6 +257,15 @@ async function verifyPassword(password: string, stored: string): Promise<boolean
 
 // ---------- Rate limiting (D1-backed, coarse but enough to stop spam) ----------
 
+// Counts a hit for `bucket` and says whether the caller is over `limit` within
+// the last `windowSeconds`. The check and the insert are ONE statement, so
+// concurrent requests can't all read "9 of 10" and then all insert: SQLite
+// evaluates the subquery and the insert atomically.
+//
+// The bucket (which embeds IP addresses and email addresses for the auth
+// limits) is stored as a SHA-256 hash: the table only ever needs equality, and
+// there's no reason for it to hold raw personal data. A rejected attempt isn't
+// recorded, so hammering an exhausted bucket doesn't extend the lockout.
 async function rateLimited(
   env: Env,
   bucket: string,
@@ -265,22 +274,22 @@ async function rateLimited(
 ): Promise<boolean> {
   const now = Math.floor(Date.now() / 1000);
   const cutoff = now - windowSeconds;
+  const key = await sha256Hex(bucket);
 
-  const row = await env.DB.prepare(
-    `SELECT COUNT(*) as c FROM rate_limit_hits WHERE bucket = ? AND created_at > ?`
+  const result = await env.DB.prepare(
+    `INSERT INTO rate_limit_hits (bucket, created_at)
+     SELECT ?1, ?2
+     WHERE (SELECT COUNT(*) FROM rate_limit_hits WHERE bucket = ?1 AND created_at > ?3) < ?4`
   )
-    .bind(bucket, cutoff)
-    .first<{ c: number }>();
-
-  if ((row?.c ?? 0) >= limit) return true;
-
-  await env.DB.prepare(`INSERT INTO rate_limit_hits (bucket, created_at) VALUES (?, ?)`)
-    .bind(bucket, now)
+    .bind(key, now, cutoff, limit)
     .run();
+
+  if (result.meta.changes === 0) return true;
+
   // Opportunistic cleanup so the table doesn't grow unbounded — cheap
   // because it's scoped to this one bucket.
   await env.DB.prepare(`DELETE FROM rate_limit_hits WHERE bucket = ? AND created_at <= ?`)
-    .bind(bucket, cutoff)
+    .bind(key, cutoff)
     .run();
 
   return false;

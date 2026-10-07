@@ -51,6 +51,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   public key registered for the app before uploading anything.
 
 ### Security
+- The rate limiter is atomic: the count check and the insert are a single statement, so
+  concurrent requests can no longer all slip under the limit (30 parallel login attempts let
+  19 through against a limit of 10 before). Rejected attempts aren't recorded, and buckets —
+  which embed IP and email addresses — are stored as SHA-256 hashes.
 - `Authorization` header is parsed strictly (`Bearer <token>`, scheme case-insensitive).
 - The beta-feed token is compared in constant time.
 
