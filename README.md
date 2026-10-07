@@ -9,7 +9,7 @@ Railcast is that missing piece. Push a build, get back a signed, hosted feed. No
 ## What you get
 
 - A hosted `appcast.xml` for each app, served fast and cached at the edge
-- EdDSA signing built in — every release is verified before Sparkle installs it
+- EdDSA signing happens on your machine: Railcast never sees your private key, so even a full compromise of the server can't produce an update your users' Sparkle will accept
 - Release channels (stable / beta) out of the box
 - A CLI that turns "build → signed, hosted release" into one command
 - A web dashboard that mirrors the CLI: same apps, same release history, same delete — pick
@@ -72,6 +72,16 @@ double check:
 └────────────────────────────────────────────
 ```
 
+## Already shipping with Sparkle?
+
+Installed copies only trust the `SUPublicEDKey` they shipped with, so reuse your existing key instead of generating a new one:
+
+```bash
+railcast init --app myapp --import-key /path/to/your/sparkle_private_key
+```
+
+The key is copied to `myapp.key` in Railcast's format; your original file is left alone. `init` prints `SUPublicEDKey` — it must equal the one already in your shipping app's `Info.plist`, otherwise it's the wrong key. Then ship **one last release from your old feed** that changes `SUFeedURL` to the Railcast URL; from then on, publish with Railcast.
+
 ## Updating an existing app
 
 From the same directory (so `.railcast.json` is picked up):
@@ -118,8 +128,7 @@ short forms shown earlier. Run `railcast publish --help` any time for the full, 
 
 ## Status
 
-In active development. Sparkle support is live; WinSparkle and Velopack (Windows / .NET) are
-planned next.
+In active development. macOS / Sparkle only.
 
 Free and open source under [AGPL-3.0](./LICENSE) — [self-host it](./SELF-HOSTING.md), or use the
 hosted instance at [railcast.casablanque.com](https://railcast.casablanque.com). No account
