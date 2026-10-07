@@ -101,6 +101,10 @@ function escapeXml(s: string): string {
 // "]]]]><![CDATA[>". Concatenated, adjacent CDATA sections are equivalent
 // to one continuous block from the XML parser's point of view, so this is
 // lossless — the exact original bytes come back out on the other side.
+function looksLikeHtml(notes: string): boolean {
+  return /^\s*<(!--|[a-zA-Z][\w-]*[\s>/])/.test(notes);
+}
+
 function safeCData(s: string): string {
   return s.replace(/]]>/g, "]]]]><![CDATA[>");
 }
@@ -121,8 +125,12 @@ function renderAppcast(
     .map((r) => {
       const pubDate = formatRfc2822(r.created_at);
       const downloadUrl = `${fileBaseUrl}/${r.file_key}`;
+      // Notes are Markdown by default (plain text is valid Markdown). Notes that
+      // start with an HTML tag keep working as HTML: without the format
+      // attribute Sparkle treats <description> as HTML. Markdown needs Sparkle
+      // 2.9+ on macOS 12+; older clients show it unformatted.
       const description = r.release_notes
-        ? `\n      <description><![CDATA[${safeCData(r.release_notes)}]]></description>`
+        ? `\n      <description${looksLikeHtml(r.release_notes) ? "" : ' sparkle:format="markdown"'}><![CDATA[${safeCData(r.release_notes)}]]></description>`
         : "";
       const critical = r.critical ? `\n      <sparkle:criticalUpdate/>` : "";
       const minSystemVersion = r.min_system_version

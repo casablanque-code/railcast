@@ -409,7 +409,7 @@ describe("publish flow", () => {
     // by "<![CDATA[". A non-greedy match up to the first "]]></description>"
     // therefore captures the whole (possibly multi-segment) CDATA payload,
     // split-markers included.
-    const descMatch = xml.match(/<description><!\[CDATA\[([\s\S]*?)]]><\/description>/);
+    const descMatch = xml.match(/<description[^>]*><!\[CDATA\[([\s\S]*?)]]><\/description>/);
     expect(descMatch).not.toBeNull();
 
     // Undo the split-escaping to recover what should be byte-for-byte the
@@ -1956,5 +1956,36 @@ describe("export", () => {
     const stranger = await seedUserAppAndToken();
     expect((await exportReq(stranger.token, appId)).status).toBe(403);
     expect((await SELF.fetch(`https://railcast.test/${appId}/export`)).status).toBe(401);
+  });
+});
+
+describe("release notes format", () => {
+  async function feedWithNotes(notes: string | undefined) {
+    const { token, appId } = await seedUserAppAndToken();
+    const { file_key, file_size, sha256 } = await uploadBuild(token, appId, "MyApp-1.0.0.zip", "bytes");
+    const res = await SELF.fetch(`https://railcast.test/${appId}/versions`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ version: "1.0.0", build_number: 1, file_key, file_size, sha256, signature: "sig", release_notes: notes }),
+    });
+    expect(res.status).toBe(201);
+    return (await SELF.fetch(`https://railcast.test/${appId}/appcast.xml`)).text();
+  }
+
+  it("marks Markdown and plain-text notes as markdown", async () => {
+    const xml = await feedWithNotes("## What's new\n\n- faster\n- <https://example.com>");
+    expect(xml).toContain('<description sparkle:format="markdown"><![CDATA[## What');
+  });
+
+  it("leaves notes that start with an HTML tag as HTML", async () => {
+    for (const html of ["<h2>New</h2><ul><li>faster</li></ul>", "  <p>Fixes</p>", "<!-- x --><p>y</p>"]) {
+      const xml = await feedWithNotes(html);
+      expect(xml).toContain("<description><![CDATA[");
+      expect(xml).not.toContain("sparkle:format");
+    }
+  });
+
+  it("emits no description without notes", async () => {
+    expect(await feedWithNotes(undefined)).not.toContain("<description");
   });
 });

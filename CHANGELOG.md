@@ -33,6 +33,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `railcast list` marks yanked releases; `railcast cleanup` ignores them.
 
 ### Changed
+- Release notes are now marked `sparkle:format="markdown"` in the appcast, as the README
+  always promised (Sparkle 2.9+, macOS 12+; older clients show the text unformatted). Notes
+  that start with an HTML tag are left as HTML, so existing HTML notes keep rendering.
 - The public (stable) `appcast.xml` is now actually served from the edge cache (60 s TTL,
   purged in the local data center on publish/delete). It used to send `no-cache`, so every
   update check hit the Worker and D1. Beta feeds are never cached (`private, no-store`).
