@@ -1666,3 +1666,51 @@ describe("Authorization header parsing", () => {
     expect((await listApps(token)).status).toBe(401);
   });
 });
+
+describe("appcast edge cache", () => {
+  async function insertVersionRow(appId: string, version: string, build: number, channel = "stable") {
+    await env.DB.prepare(
+      `INSERT INTO versions (app_id, channel, version, build_number, file_key, file_size, sha256, signature, created_at)
+       VALUES (?, ?, ?, ?, ?, 1, ?, 'sig', ?)`
+    )
+      .bind(appId, channel, version, build, `${appId}/${version}.zip`, "0".repeat(64), Math.floor(Date.now() / 1000))
+      .run();
+  }
+
+  it("serves the stable feed from cache, and a publish purges it", async () => {
+    const { token, appId } = await seedUserAppAndToken();
+    await insertVersionRow(appId, "1.0.0", 1);
+
+    const first = await SELF.fetch(`https://railcast.test/${appId}/appcast.xml`);
+    expect(first.status).toBe(200);
+    expect(first.headers.get("Cache-Control")).toContain("public");
+    expect(await first.text()).toContain("<sparkle:version>1</sparkle:version>");
+
+    // A row added behind the Worker's back stays invisible while the cached copy lives...
+    await insertVersionRow(appId, "1.1.0", 2);
+    const stale = await (await SELF.fetch(`https://railcast.test/${appId}/appcast.xml`)).text();
+    expect(stale).not.toContain("<sparkle:version>2</sparkle:version>");
+
+    // ...but publishing through the API purges it.
+    const published = await publishVersion(token, appId, "1.2.0", 3);
+    expect(published.status).toBe(201);
+    const fresh = await (await SELF.fetch(`https://railcast.test/${appId}/appcast.xml`)).text();
+    expect(fresh).toContain("<sparkle:version>3</sparkle:version>");
+    expect(fresh).toContain("<sparkle:version>2</sparkle:version>");
+  });
+
+  it("never caches the beta feed", async () => {
+    const { appId } = await seedUserAppAndToken();
+    await env.DB.prepare(`UPDATE apps SET beta_token = ? WHERE id = ?`).bind("beta-secret", appId).run();
+    await insertVersionRow(appId, "2.0.0-beta", 1, "beta");
+
+    const url = `https://railcast.test/${appId}/appcast.xml?channel=beta&token=beta-secret`;
+    const first = await SELF.fetch(url);
+    expect(first.status).toBe(200);
+    expect(first.headers.get("Cache-Control")).toContain("no-store");
+    await first.text();
+
+    await insertVersionRow(appId, "2.0.1-beta", 2, "beta");
+    expect(await (await SELF.fetch(url)).text()).toContain("<sparkle:version>2</sparkle:version>");
+  });
+});

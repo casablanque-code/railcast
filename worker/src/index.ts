@@ -43,6 +43,26 @@ interface VersionRow {
 // two can never drift apart and quietly disagree about what "old" means.
 const APPCAST_HISTORY_LIMIT = 10;
 
+// How long the public (stable) appcast may be served from the edge cache.
+// Sparkle clients poll at most every few hours, so a minute of staleness is
+// invisible; it just stops every update check from hitting the Worker and D1.
+const APPCAST_EDGE_TTL_SECONDS = 60;
+
+function appcastCacheKey(origin: string, appId: string): Request {
+  return new Request(`${origin}/${appId}/appcast.xml`, { method: "GET" });
+}
+
+// Drops the cached stable appcast in THIS data center right after a publish or
+// delete, so the person who just released sees it immediately. Other data
+// centers catch up within APPCAST_EDGE_TTL_SECONDS. Never fails the request.
+async function purgeAppcastCache(origin: string, appId: string): Promise<void> {
+  try {
+    await caches.default.delete(appcastCacheKey(origin, appId));
+  } catch {
+    // best effort
+  }
+}
+
 function escapeXml(s: string): string {
   return s
     .replace(/&/g, "&amp;")
@@ -1010,6 +1030,7 @@ async function handleApiDeleteApp(request: Request, env: Env, appId: string): Pr
   // ownership check 404s on a nonexistent app_id.
   await env.DB.prepare(`DELETE FROM api_tokens WHERE app_id = ?`).bind(appId).run();
   await env.DB.prepare(`DELETE FROM apps WHERE id = ?`).bind(appId).run();
+  await purgeAppcastCache(new URL(request.url).origin, appId);
 
   // Best-effort cleanup of the uploaded build artifacts in R2. Not
   // transactional with the D1 deletes above (R2 and D1 are separate
@@ -1351,6 +1372,7 @@ async function handleCreateVersion(request: Request, env: Env, appId: string): P
     .first<{ id: number; build_number: number }>();
 
   const finalBuildNumber = inserted!.build_number;
+  if (channel === "stable") await purgeAppcastCache(new URL(request.url).origin, appId);
 
   return new Response(
     JSON.stringify({
@@ -1480,6 +1502,8 @@ async function handleDeleteRelease(
     );
   }
 
+  if (release.channel === "stable") await purgeAppcastCache(new URL(request.url).origin, appId);
+
   const stillReferenced = await env.DB.prepare(
     `SELECT 1 FROM versions WHERE file_key = ? LIMIT 1`
   )
@@ -1501,6 +1525,19 @@ async function handleDeleteRelease(
 async function handleAppcast(request: Request, env: Env, appId: string): Promise<Response> {
   const url = new URL(request.url);
   const channel = url.searchParams.get("channel") ?? "stable";
+
+  // Only the public stable feed is cached. Non-stable feeds carry a secret
+  // token in the URL and must never land in a shared cache.
+  const cacheable = channel === "stable";
+  const cacheKey = appcastCacheKey(url.origin, appId);
+  if (cacheable) {
+    try {
+      const hit = await caches.default.match(cacheKey);
+      if (hit) return hit;
+    } catch {
+      // cache trouble must never break the feed — fall through to D1
+    }
+  }
 
   // Non-stable channels need the app's beta token — the channel name
   // itself isn't a secret, so without this anyone who finds the (opaque,
@@ -1534,13 +1571,23 @@ async function handleAppcast(request: Request, env: Env, appId: string): Promise
 
   const xml = renderAppcast(appId, results, env.PUBLIC_FILE_BASE_URL, `${url.origin}/${appId}/appcast.xml`);
 
-  return new Response(xml, {
+  const response = new Response(xml, {
     status: 200,
     headers: {
       "Content-Type": "application/xml; charset=utf-8",
-      "Cache-Control": "no-cache",
+      "Cache-Control": cacheable
+        ? `public, max-age=${APPCAST_EDGE_TTL_SECONDS}`
+        : "private, no-store",
     },
   });
+  if (cacheable) {
+    try {
+      await caches.default.put(cacheKey, response.clone());
+    } catch {
+      // best effort
+    }
+  }
+  return response;
 }
 
 // ---------- Router ----------

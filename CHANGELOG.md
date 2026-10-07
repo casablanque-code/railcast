@@ -14,6 +14,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   README has the migration steps.
 
 ### Changed
+- The public (stable) `appcast.xml` is now actually served from the edge cache (60 s TTL,
+  purged in the local data center on publish/delete). It used to send `no-cache`, so every
+  update check hit the Worker and D1. Beta feeds are never cached (`private, no-store`).
 - `railcast publish` verifies the fresh signature and checks the signing key against the
   public key registered for the app before uploading anything.
 
