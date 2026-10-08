@@ -1,0 +1,90 @@
+name: Sparkle end-to-end
+
+# A real Sparkle client against a real (local) Railcast Worker, on a macOS
+# runner: publish with the CLI, let Sparkle's command-line updater read the
+# feed, then `railcast redirect` the feed elsewhere and check that Sparkle
+# follows the 302. See .github/e2e/sparkle-e2e.sh.
+on:
+  workflow_dispatch:
+    inputs:
+      sparkle_version:
+        description: "Sparkle release to test against, e.g. 2.10.0 (empty = latest)"
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+jobs:
+  e2e:
+    name: Publish, probe, redirect (macOS)
+    runs-on: macos-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: cli/go.mod
+          cache: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Download Sparkle
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SPARKLE_VERSION: ${{ inputs.sparkle_version }}
+        run: |
+          set -euo pipefail
+          if [ -n "$SPARKLE_VERSION" ]; then
+            url="https://github.com/sparkle-project/Sparkle/releases/download/${SPARKLE_VERSION}/Sparkle-${SPARKLE_VERSION}.tar.xz"
+          else
+            url=$(gh api repos/sparkle-project/Sparkle/releases/latest \
+              --jq '.assets[] | select(.name | test("^Sparkle-[0-9.]+\\.tar\\.xz$")) | .browser_download_url')
+          fi
+          echo "Downloading $url"
+          curl -fsSL "$url" -o sparkle.tar.xz
+          mkdir sparkle
+          tar -xf sparkle.tar.xz -C sparkle
+          xattr -dr com.apple.quarantine sparkle || true
+          tag="$(basename "$url" .tar.xz)"; tag="${tag#Sparkle-}"
+          echo "SPARKLE_TAG=$tag" >> "$GITHUB_ENV"
+          echo "SPARKLE_DIR=$PWD/sparkle" >> "$GITHUB_ENV"
+
+      # Sparkle's command-line updater (sparkle-cli) may or may not ship in the
+      # release archive. If it doesn't, build it from the same tag.
+      - name: Build sparkle-cli if the release doesn't include it
+        run: |
+          set -euo pipefail
+          pattern=( -type f -perm -u+x \( -name sparkle-cli -o -path '*sparkle.app/Contents/MacOS/*' \) )
+          if [ -n "$(find sparkle "${pattern[@]}" | head -n 1)" ]; then
+            echo "sparkle-cli found in the release archive"
+            exit 0
+          fi
+          echo "Not in the archive — building Sparkle $SPARKLE_TAG from source"
+          git clone --depth 1 --branch "$SPARKLE_TAG" --recurse-submodules --shallow-submodules \
+            https://github.com/sparkle-project/Sparkle.git sparkle-src
+          xcodebuild -project sparkle-src/Sparkle.xcodeproj -scheme sparkle-cli \
+            -configuration Release -derivedDataPath sparkle-build \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO build | tail -n 40
+          cli="$(find sparkle-build "${pattern[@]}" | head -n 1)"
+          test -n "$cli"
+          echo "SPARKLE_CLI=$PWD/$cli" >> "$GITHUB_ENV"
+
+      - name: Build the Railcast CLI
+        working-directory: cli
+        run: |
+          go build -o "$RUNNER_TEMP/railcast" .
+          echo "RAILCAST=$RUNNER_TEMP/railcast" >> "$GITHUB_ENV"
+
+      - name: Start the Worker locally
+        run: bash .github/e2e/start-worker.sh
+
+      - name: End-to-end
+        run: bash .github/e2e/sparkle-e2e.sh
+
+      - name: Worker log
+        if: always()
+        run: cat "$RUNNER_TEMP/wrangler.log" || true
