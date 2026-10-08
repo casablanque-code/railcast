@@ -10,4 +10,5 @@ railcast
 .railcast.token
 .railcast.json
 *.sh
+!.github/e2e/*.sh
 *.ps1
