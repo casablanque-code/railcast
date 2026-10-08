@@ -84,8 +84,9 @@ grep -q '<sparkle:minimumSystemVersion>12.0<' "$WORK/feed.xml" \
 grep -q 'sparkle:format="markdown"' "$WORK/feed.xml" || fail "release notes aren't marked as markdown"
 
 # --- 4. a real Sparkle client looks at the feed ----------------------------
-# `sparkle --probe` exits 0 when an update is available and non-zero when there
-# isn't (it can't be combined with --check-immediately). So each probe pretends
+# `sparkle --probe` exits 0 when an update is available and 4 when there is none
+# ("No new update available!", as observed with Sparkle 2.10.0) — anything else
+# is an error. It can't be combined with --check-immediately. So each probe pretends
 # to be an installed copy with a chosen build number, and the exit code says
 # whether the feed it read offers something newer. Builds in play: Railcast has
 # 1 and 2 (3 later); the static host offers 9.
@@ -102,7 +103,7 @@ probe() { # label installed-build expect(update|none)
   [ "$rc" -ne 142 ] || fail "Sparkle timed out after ${PROBE_TIMEOUT}s ($label)"
   case "$expect" in
     update) [ "$rc" -eq 0 ] || fail "expected an available update, exit code was $rc ($label)" ;;
-    none)   [ "$rc" -ne 0 ] || fail "expected no update, but Sparkle reported one ($label)" ;;
+    none)   [ "$rc" -eq 4 ] || fail "expected \"no new update\" (exit code 4), got $rc ($label)" ;;
   esac
 }
 

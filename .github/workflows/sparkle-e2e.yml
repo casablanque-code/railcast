@@ -11,6 +11,15 @@ on:
         description: "Sparkle release to test against, e.g. 2.10.0 (empty = latest)"
         required: false
         default: ""
+  pull_request:
+    paths:
+      - "worker/**"
+      - "cli/**"
+      - ".github/e2e/**"
+      - ".github/workflows/sparkle-e2e.yml"
+  schedule:
+    # Weekly, against the latest Sparkle.
+    - cron: "43 6 * * 1"
 
 permissions:
   contents: read

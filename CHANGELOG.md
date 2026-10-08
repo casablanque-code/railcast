@@ -44,6 +44,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `sign_update` (verified with Sparkle 2.10.0): an exported key imports cleanly and signatures
   are byte-identical to Sparkle's.
 
+- CI: `sparkle-e2e.yml` runs a real Sparkle client (built from source, the release archive
+  doesn't ship its command-line updater) against a local Worker: publish with the CLI, read
+  the feed, `redirect` to another host and back (verified with Sparkle 2.10.0).
+
+### Fixed
+- `/:appId/feed-redirect` and `/:appId/export` weren't routed through the Worker, so
+  `railcast redirect` got HTTP 405 (found by the local end-to-end run).
+- macOS release binaries are built with a current Go and checked for `LC_UUID`; Go 1.22
+  produced binaries current macOS refuses to start.
+
 ### Changed
 - Docs brought up to date: README (limits, caching, key handling, export/redirect), SELF-HOSTING
   (new vars, upgrade order, cron, cache), dashboard copy (no more WinSparkle/Velopack promises,

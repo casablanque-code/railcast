@@ -143,7 +143,7 @@ Downloads every release file (checked against its recorded sha256), writes `rele
 railcast redirect --to https://updates.myapp.com/appcast.xml
 ```
 
-Installed copies keep asking the feed URL they shipped with. After this, that URL answers with a redirect (302) to the new feed, so they follow you without a new release. Railcast fetches the target first and refuses it unless it looks like an appcast (`--force` overrides). Keep the new feed signed with the same key — installed copies still trust the `SUPublicEDKey` they shipped with. The beta channel follows too if the URL ends in `/appcast.xml` (it maps to `appcast-beta.xml` next to it). Undo with `railcast redirect --clear`; `railcast redirect` alone shows the current state. This hasn't been tried against a real Sparkle client yet — test it with a throwaway app before relying on it.
+Installed copies keep asking the feed URL they shipped with. After this, that URL answers with a redirect (302) to the new feed, so they follow you without a new release. Railcast fetches the target first and refuses it unless it looks like an appcast (`--force` overrides). Keep the new feed signed with the same key — installed copies still trust the `SUPublicEDKey` they shipped with. The beta channel follows too if the URL ends in `/appcast.xml` (it maps to `appcast-beta.xml` next to it). Undo with `railcast redirect --clear`; `railcast redirect` alone shows the current state. CI checks this with a real Sparkle client (the update check of Sparkle's own command-line updater follows the redirect, and the feed comes back after `--clear`), but try it with a throwaway app before relying on it for a real one.
 
 ## Gotchas
 
