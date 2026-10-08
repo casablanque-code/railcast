@@ -40,6 +40,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Terms and privacy pages (`/terms`, `/privacy`) with a contact address, and a footer on every
   dashboard page linking to them.
 
+- CI: `sparkle-compat.yml` runs on macOS against Sparkle's real `generate_keys` and
+  `sign_update` (verified with Sparkle 2.10.0): an exported key imports cleanly and signatures
+  are byte-identical to Sparkle's.
+
 ### Changed
 - Docs brought up to date: README (limits, caching, key handling, export/redirect), SELF-HOSTING
   (new vars, upgrade order, cron, cache), dashboard copy (no more WinSparkle/Velopack promises,

@@ -79,10 +79,13 @@ double check:
 Installed copies only trust the `SUPublicEDKey` they shipped with, so reuse your existing key instead of generating a new one:
 
 ```bash
-railcast init --app myapp --import-key /path/to/your/sparkle_private_key
+# 1. Export the key Sparkle keeps in your Keychain (from Sparkle's bin/ folder):
+./generate_keys -x sparkle_private_key
+# 2. Register it with Railcast:
+railcast init --app myapp --import-key sparkle_private_key
 ```
 
-The key is copied to `myapp.key` in Railcast's format; your original file is left alone. `init` prints `SUPublicEDKey` — it must equal the one already in your shipping app's `Info.plist`, otherwise it's the wrong key. Then ship **one last release from your old feed** that changes `SUFeedURL` to the Railcast URL; from then on, publish with Railcast.
+The export is a 32-byte seed, and Railcast reads it directly — CI checks this against Sparkle's own `generate_keys` and `sign_update` (same key, same file, identical signature). The key is copied to `myapp.key` in Railcast's format; your original file is left alone. `init` prints `SUPublicEDKey` — it must equal the one already in your shipping app's `Info.plist`, otherwise it's the wrong key. Then ship **one last release from your old feed** that changes `SUFeedURL` to the Railcast URL; from then on, publish with Railcast.
 
 ## Updating an existing app
 
