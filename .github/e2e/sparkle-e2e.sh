@@ -26,7 +26,6 @@ find "$SPARKLE_DIR" -maxdepth 3 -not -path '*/Sparkle.framework/*' | sort | head
 SPARKLE_CLI="${SPARKLE_CLI:-$(find "$SPARKLE_DIR" -type f -perm -u+x \( -name sparkle-cli -o -path '*sparkle.app/Contents/MacOS/*' \) | head -n 1)}"
 [ -n "$SPARKLE_CLI" ] || fail "no sparkle-cli / sparkle.app in the Sparkle release (see the listing above) — it has to be built from source instead"
 log "Using Sparkle's updater: $SPARKLE_CLI"
-"$SPARKLE_CLI" --help 2>&1 | head -40 || true
 
 # --- 2. a throwaway app, built twice, and an "installed" copy --------------
 make_app() { # dir version build [feed-url pubkey]
@@ -85,31 +84,44 @@ grep -q '<sparkle:minimumSystemVersion>12.0<' "$WORK/feed.xml" \
 grep -q 'sparkle:format="markdown"' "$WORK/feed.xml" || fail "release notes aren't marked as markdown"
 
 # --- 4. a real Sparkle client looks at the feed ----------------------------
-make_app "$WORK/installed" 1.0.0 1 "$FEED" "$PUBKEY"
-
-probe() { # label expected-version unexpected-version
-  log "Sparkle probe: $1"
+# `sparkle --probe` exits 0 when an update is available and non-zero when there
+# isn't (it can't be combined with --check-immediately). So each probe pretends
+# to be an installed copy with a chosen build number, and the exit code says
+# whether the feed it read offers something newer. Builds in play: Railcast has
+# 1 and 2 (3 later); the static host offers 9.
+probe() { # label installed-build expect(update|none)
+  local label="$1" build="$2" expect="$3"
+  log "Sparkle probe: $label — installed build $build, expecting: $expect"
+  make_app "$WORK/installed" "1.0.$build" "$build" "$FEED" "$PUBKEY"
   set +e
-  out="$(perl -e 'alarm shift; exec @ARGV' "$PROBE_TIMEOUT" "$SPARKLE_CLI" "$WORK/installed/MyApp.app" --check-immediately --probe --verbose 2>&1)"
+  out="$(perl -e 'alarm shift; exec @ARGV' "$PROBE_TIMEOUT" "$SPARKLE_CLI" "$WORK/installed/MyApp.app" \
+    --probe --verbose --grant-automatic-checks --user-agent-name RailcastE2E 2>&1)"
   rc=$?
   set -e
   echo "$out"; echo "(exit code $rc)"
-  echo "$out" | grep -q "$2" || fail "Sparkle's output doesn't mention $2 ($1)"
-  if [ -n "${3:-}" ] && echo "$out" | grep -q "$3"; then fail "Sparkle's output mentions $3 but shouldn't ($1)"; fi
+  [ "$rc" -ne 142 ] || fail "Sparkle timed out after ${PROBE_TIMEOUT}s ($label)"
+  case "$expect" in
+    update) [ "$rc" -eq 0 ] || fail "expected an available update, exit code was $rc ($label)" ;;
+    none)   [ "$rc" -ne 0 ] || fail "expected no update, but Sparkle reported one ($label)" ;;
+  esac
 }
-probe "feed served by Railcast" 1.1.0
+
+probe "Railcast feed offers build 2 to an installed build 1" 1 update
+probe "Railcast feed offers nothing to an installed build 2" 2 none
 
 # --- 5. move the feed: redirect to a static host ---------------------------
+# The static feed offers build 9 — something only it has, so a client that
+# reports an update for an installed build 2 must have followed the redirect.
 cat > "$WORK/static/appcast.xml" <<XML
 <?xml version="1.0" encoding="utf-8"?>
 <rss version="2.0" xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle">
   <channel>
     <title>MyApp (moved)</title>
     <item>
-      <title>3.0.0</title>
-      <sparkle:version>3</sparkle:version>
-      <sparkle:shortVersionString>3.0.0</sparkle:shortVersionString>
-      <enclosure url="http://127.0.0.1:$STATIC_PORT/MyApp-3.0.0.zip" length="1" type="application/octet-stream" sparkle:edSignature="AAAA"/>
+      <title>1.9.0</title>
+      <sparkle:version>9</sparkle:version>
+      <sparkle:shortVersionString>1.9.0</sparkle:shortVersionString>
+      <enclosure url="http://127.0.0.1:$STATIC_PORT/MyApp-1.9.0.zip" length="1" type="application/octet-stream" sparkle:edSignature="AAAA"/>
     </item>
   </channel>
 </rss>
@@ -125,17 +137,21 @@ code="$(curl -s -o /dev/null -w '%{http_code} %{redirect_url}' "$FEED")"
 echo "GET $FEED -> $code"
 [ "$code" = "302 http://127.0.0.1:$STATIC_PORT/appcast.xml" ] || fail "feed doesn't answer 302 to the static host"
 
-probe "after redirect: client must follow it" 3.0.0 1.1.0
+probe "after redirect: client must follow it to the static feed (build 9)" 2 update
 
-# a release published while redirected must not leak through
+# a release published while redirected must not change what the client sees
 publish 1.2.0 3 >/dev/null
-probe "redirect still wins after a new publish" 3.0.0 1.2.0
+code="$(curl -s -o /dev/null -w '%{http_code}' "$FEED")"
+[ "$code" = "302" ] || fail "a new publish broke the redirect (HTTP $code)"
 
 # --- 6. undo ----------------------------------------------------------------
 log "railcast redirect --clear"
 "$RAILCAST" redirect --clear
 code="$(curl -s -o /dev/null -w '%{http_code}' "$FEED")"
 [ "$code" = "200" ] || fail "feed should be served again after --clear, got HTTP $code"
-probe "after --clear: back to Railcast" 1.2.0 3.0.0
+curl -fsS "$FEED" | grep -q '<sparkle:shortVersionString>1.2.0<' || fail "after --clear the Railcast feed doesn't offer 1.2.0"
+# Installed build 3 is current for Railcast (nothing newer), but the static
+# feed's build 9 would still count as an update if the client kept being redirected.
+probe "after --clear: back on the Railcast feed, nothing newer than build 3" 3 none
 
 log "ALL CHECKS PASSED"
