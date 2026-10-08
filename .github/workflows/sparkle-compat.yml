@@ -32,6 +32,7 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: cli/go.mod
+          cache: false
 
       - name: Download Sparkle's command-line tools
         env:
@@ -74,4 +75,6 @@ jobs:
 
       - name: Key and signature compatibility
         working-directory: cli
-        run: go test -run TestSparkleKeyCompat -v -count=1 ./...
+        # -linkmode=external: Go 1.22 test binaries lack LC_UUID, which dyld on
+        # current macOS refuses to load (same workaround as the cli-macos job).
+        run: go test -ldflags="-linkmode=external" -run TestSparkleKeyCompat -v -count=1 ./...
