@@ -1,0 +1,77 @@
+name: Sparkle compatibility
+
+# Runs Railcast's key handling against Sparkle's real command-line tools on a
+# macOS runner (free for public repositories): keys exported by generate_keys
+# must import cleanly, and signatures must match Sparkle's byte for byte.
+on:
+  workflow_dispatch:
+    inputs:
+      sparkle_version:
+        description: "Sparkle release to test against, e.g. 2.9.0 (empty = latest)"
+        required: false
+        default: ""
+  pull_request:
+    paths:
+      - "cli/**"
+      - ".github/workflows/sparkle-compat.yml"
+  schedule:
+    # Weekly, to notice if a new Sparkle release changes something.
+    - cron: "17 6 * * 1"
+
+permissions:
+  contents: read
+
+jobs:
+  key-compat:
+    name: Keys and signatures (macOS)
+    runs-on: macos-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: cli/go.mod
+
+      - name: Download Sparkle's command-line tools
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SPARKLE_VERSION: ${{ inputs.sparkle_version }}
+        run: |
+          set -euo pipefail
+          if [ -n "$SPARKLE_VERSION" ]; then
+            url="https://github.com/sparkle-project/Sparkle/releases/download/${SPARKLE_VERSION}/Sparkle-${SPARKLE_VERSION}.tar.xz"
+          else
+            url=$(gh api repos/sparkle-project/Sparkle/releases/latest \
+              --jq '.assets[] | select(.name | test("^Sparkle-[0-9.]+\\.tar\\.xz$")) | .browser_download_url')
+          fi
+          echo "Downloading $url"
+          curl -fsSL "$url" -o sparkle.tar.xz
+          mkdir sparkle
+          tar -xf sparkle.tar.xz -C sparkle
+          xattr -dr com.apple.quarantine sparkle || true
+
+          generate_keys=$(find sparkle -name generate_keys -type f | head -n 1)
+          sign_update=$(find sparkle -name sign_update -type f | head -n 1)
+          test -n "$generate_keys" && test -n "$sign_update"
+          chmod +x "$generate_keys" "$sign_update"
+          [ "$(dirname "$generate_keys")" = "$(dirname "$sign_update")" ]
+          echo "RAILCAST_SPARKLE_BIN=$PWD/$(dirname "$generate_keys")" >> "$GITHUB_ENV"
+          "$generate_keys" --help 2>&1 | head -n 20 || true
+          "$sign_update" --help 2>&1 | head -n 20 || true
+
+      # generate_keys keeps the private key in the keychain. A throwaway one,
+      # unlocked, so nothing on the runner can pop up a password prompt.
+      - name: Temporary keychain
+        run: |
+          set -euo pipefail
+          kc="$RUNNER_TEMP/railcast-ci.keychain-db"
+          security create-keychain -p ci "$kc"
+          security set-keychain-settings -lut 3600 "$kc"
+          security unlock-keychain -p ci "$kc"
+          security list-keychains -d user -s "$kc"
+          security default-keychain -s "$kc"
+
+      - name: Key and signature compatibility
+        working-directory: cli
+        run: go test -run TestSparkleKeyCompat -v -count=1 ./...
