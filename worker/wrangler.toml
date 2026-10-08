@@ -29,7 +29,9 @@ run_worker_first = [
   "/*/upload/*",
   "/*/versions",
   "/*/releases",
-  "/*/releases/*"
+  "/*/releases/*",
+  "/*/feed-redirect",
+  "/*/export"
 ]
 
 # Nightly sweep of uploads that never became a release — see scheduled().
