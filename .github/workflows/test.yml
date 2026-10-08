@@ -53,3 +53,26 @@ jobs:
           cache: false
       - run: go build ./...
       - run: go test -ldflags="-linkmode=external" ./... -v
+
+  # Catches "the release binary won't start on macOS" at PR time instead of at
+  # release time: build the way release.yml does and check the Mach-O headers.
+  release-binaries:
+    name: Release build (macOS binaries load)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+          cache: false
+
+      - name: Cross-build for macOS and check LC_UUID
+        working-directory: cli
+        env:
+          CGO_ENABLED: "0"
+        run: |
+          for arch in arm64 amd64; do
+            GOOS=darwin GOARCH=$arch go build -ldflags "-s -w" -o "railcast-darwin-$arch" .
+            python3 ../.github/scripts/check-macho-uuid.py "railcast-darwin-$arch"
+          done

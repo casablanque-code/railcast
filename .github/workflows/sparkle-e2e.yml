@@ -75,8 +75,10 @@ jobs:
 
       - name: Build the Railcast CLI
         working-directory: cli
+        # -linkmode=external: with the go.mod toolchain (Go 1.22) the binary has
+        # no LC_UUID and dyld aborts on it; see release.yml and test.yml.
         run: |
-          go build -o "$RUNNER_TEMP/railcast" .
+          go build -ldflags="-linkmode=external" -o "$RUNNER_TEMP/railcast" .
           echo "RAILCAST=$RUNNER_TEMP/railcast" >> "$GITHUB_ENV"
 
       - name: Start the Worker locally

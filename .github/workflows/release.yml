@@ -25,9 +25,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # A current toolchain, not the go.mod minimum: Go 1.22 links darwin
+      # binaries without LC_UUID, and current macOS refuses to run those
+      # ("dyld: missing LC_UUID load command"). The check below keeps it honest.
       - uses: actions/setup-go@v5
         with:
-          go-version-file: cli/go.mod
+          go-version: stable
           cache: false
 
       - name: Build binary
@@ -40,6 +43,10 @@ jobs:
           out="railcast-${{ github.ref_name }}-${GOOS}-${GOARCH}"
           go build -ldflags "-s -w -X main.version=${{ github.ref_name }}" -o "$out" .
           shasum -a 256 "$out" > "$out.sha256"
+
+      - name: Check macOS binaries can be loaded (LC_UUID)
+        if: matrix.goos == 'darwin'
+        run: python3 .github/scripts/check-macho-uuid.py "cli/railcast-${{ github.ref_name }}-darwin-${{ matrix.goarch }}"
 
       - uses: actions/upload-artifact@v4
         with:
