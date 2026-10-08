@@ -37,6 +37,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   new host without a new release. Beta feeds map to `appcast-<channel>.xml` next to it.
   `GET /api/apps` and the export include `feed_redirect_url`.
 
+- Terms and privacy pages (`/terms`, `/privacy`) with a contact address, and a footer on every
+  dashboard page linking to them.
+
 ### Changed
 - Docs brought up to date: README (limits, caching, key handling, export/redirect), SELF-HOSTING
   (new vars, upgrade order, cron, cache), dashboard copy (no more WinSparkle/Velopack promises,

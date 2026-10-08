@@ -108,6 +108,15 @@ That's it — visit your domain, sign up, and you should land on a working
 dashboard. The deploy also registers the nightly cleanup cron from
 `[triggers]` in `wrangler.toml` (see below).
 
+## Terms, privacy and contact
+
+The dashboard ships `/terms` and `/privacy` pages and a footer with a contact
+address — they describe the hosted instance (its limits, its email provider,
+its contact). If you run your own, edit `dashboard/app/terms/page.tsx`,
+`dashboard/app/privacy/page.tsx` and the footer in `dashboard/app/layout.tsx`
+to match your instance before you open registration to other people,
+especially if you serve files to the public from your domain.
+
 ## Upgrading an existing instance
 
 Pull the new code, then **apply migrations first, deploy second** — a new

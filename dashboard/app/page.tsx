@@ -88,10 +88,6 @@ export default function LandingPage() {
           .
         </p>
       </section>
-
-      <footer className="border-t border-line py-8 text-xs text-ink/40">
-        <p>casablanque@proton.me</p>
-      </footer>
     </main>
   );
 }

@@ -49,6 +49,17 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
             </div>
           </header>
           {children}
+          <footer className="mt-16 flex flex-wrap gap-x-5 gap-y-1 border-t border-line pt-6 text-xs text-ink/40">
+            <a href="/terms" className="hover:text-ink">
+              Terms
+            </a>
+            <a href="/privacy" className="hover:text-ink">
+              Privacy
+            </a>
+            <a href="mailto:casablanque@proton.me" className="hover:text-ink">
+              casablanque@proton.me
+            </a>
+          </footer>
         </div>
       </body>
     </html>

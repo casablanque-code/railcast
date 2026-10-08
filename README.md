@@ -172,4 +172,8 @@ gating, no paid tier. Donations are welcome but never required — see the site 
 The hosted instance is run by one person. That is why export and redirect exist: if it ever
 goes away, your releases and your installed apps can leave with you.
 
+[Terms](https://railcast.casablanque.com/terms) and [privacy notes](https://railcast.casablanque.com/privacy)
+for the hosted instance are short and in plain language. Complaint, question, suggestion — or just
+want to say something? Feel free to reach out: casablanque@proton.me
+
 Questions or bugs: **casablanque@proton.me**
