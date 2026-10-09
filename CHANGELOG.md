@@ -52,6 +52,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the account, its apps, releases, uploaded builds, tokens, sessions and pending login links.
   `GET /:appId/export` also accepts the dashboard session.
 
+- Dashboard: yank/restore a release, move the feed (redirect), export (JSON download) and delete
+  the account, in addition to listing and deleting releases.
+
 ### Fixed
 - `/:appId/feed-redirect` and `/:appId/export` weren't routed through the Worker, so
   `railcast redirect` got HTTP 405 (found by the local end-to-end run).

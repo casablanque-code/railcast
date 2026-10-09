@@ -62,8 +62,10 @@ export default function PrivacyPage() {
           Take your releases and signatures any time with{" "}
           <span className="font-mono">railcast export</span>. Delete releases
           from the dashboard or the CLI. To delete your account and everything
-          under it, email me and I&apos;ll do it — there&apos;s no self-service
-          button yet.
+          under it — apps, releases, uploaded builds, tokens — use &quot;Delete
+          account&quot; at the bottom of the dashboard; it takes effect
+          immediately and can&apos;t be undone. Prefer email? Ask me and
+          I&apos;ll do it.
         </Section>
       </div>
 
@@ -75,7 +77,7 @@ export default function PrivacyPage() {
           </a>
         </p>
         <p className="mt-3 text-xs text-ink/40">
-          Last updated: October 8, 2026 · See also the{" "}
+          Last updated: October 9, 2026 · See also the{" "}
           <a href="/terms" className="underline hover:text-ink">
             terms
           </a>

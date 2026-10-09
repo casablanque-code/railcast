@@ -52,6 +52,7 @@ export interface App {
   name: string; // free-text label you chose, not unique, never in a URL
   signing_public_key: string;
   beta_token: string;
+  feed_redirect_url: string | null; // set when the app's feed has moved to another host
   created_at: number;
 }
 
@@ -85,6 +86,15 @@ export interface Release {
   min_system_version: string | null;
   yanked: number; // 0 | 1 — hidden from the appcast when 1 (`railcast yank`)
   created_at: number;
+}
+
+// What GET /:appId/export returns (also what the dashboard's Export button saves).
+export interface ExportData {
+  app: { id: string; name: string; signing_public_key: string; feed_redirect_url: string | null };
+  public_file_base_url: string;
+  history_limit: number;
+  releases: (Release & { signature: string })[];
+  appcasts: Record<string, string> | null;
 }
 
 export const api = {
@@ -128,4 +138,18 @@ export const api = {
     ),
   deleteRelease: (appId: string, releaseId: number) =>
     request<void>(`/${appId}/releases/${releaseId}`, { method: "DELETE" }),
+  // Same routes as `railcast yank`, `railcast redirect` and `railcast export`.
+  yankRelease: (appId: string, releaseId: number) =>
+    request<void>(`/${appId}/releases/${releaseId}/yank`, { method: "POST" }),
+  unyankRelease: (appId: string, releaseId: number) =>
+    request<void>(`/${appId}/releases/${releaseId}/unyank`, { method: "POST" }),
+  setFeedRedirect: (appId: string, url: string | null) =>
+    request<{ feed_redirect_url: string | null }>(`/${appId}/feed-redirect`, {
+      method: "PUT",
+      body: JSON.stringify({ url }),
+    }),
+  exportApp: (appId: string, filesUrl?: string) =>
+    request<ExportData>(`/${appId}/export${filesUrl ? `?files_url=${encodeURIComponent(filesUrl)}` : ""}`),
+  deleteAccount: (confirmEmail: string) =>
+    request<void>("/api/me", { method: "DELETE", body: JSON.stringify({ confirm_email: confirmEmail }) }),
 };

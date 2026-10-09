@@ -15,8 +15,8 @@ Railcast is that missing piece. Push a build, get back a signed, hosted feed. No
 - Pull a broken release without deleting anything (`railcast yank`)
 - No lock-in: `railcast export` hands you every file, signature and a ready-made feed, and
   `railcast redirect` moves already-installed apps to your own host without a new release
-- A web dashboard for your apps, tokens and release history — the same list and delete as
-  `railcast list` / `railcast cleanup` (yank, export and redirect are CLI-only for now)
+- A web dashboard for your apps, tokens and release history — the same operations as
+  `railcast list` / `yank` / `cleanup` / `redirect` / `export`, plus deleting your account
 
 ## Who this is for
 

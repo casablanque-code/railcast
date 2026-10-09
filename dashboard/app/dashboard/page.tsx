@@ -38,6 +38,19 @@ export default function DashboardPage() {
   const [releasesLoading, setReleasesLoading] = useState<string | null>(null);
   const [releasesError, setReleasesError] = useState<Record<string, string>>({});
   const [deletingReleaseKey, setDeletingReleaseKey] = useState<string | null>(null);
+  const [yankingKey, setYankingKey] = useState<string | null>(null);
+
+  const [redirectInput, setRedirectInput] = useState<Record<string, string>>({});
+  const [redirectBusy, setRedirectBusy] = useState<string | null>(null);
+  const [redirectError, setRedirectError] = useState<Record<string, string>>({});
+  const [exportFilesUrl, setExportFilesUrl] = useState<Record<string, string>>({});
+  const [exportBusy, setExportBusy] = useState<string | null>(null);
+  const [exportError, setExportError] = useState<Record<string, string>>({});
+
+  const [deleteOpen, setDeleteOpen] = useState(false);
+  const [deleteEmail, setDeleteEmail] = useState("");
+  const [deleteBusy, setDeleteBusy] = useState(false);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
 
   async function loadReleases(appId: string) {
     setReleasesLoading(appId);
@@ -98,6 +111,109 @@ export default function DashboardPage() {
       }));
     } finally {
       setDeletingReleaseKey((cur) => (cur === key ? null : cur));
+    }
+  }
+
+  // Yank hides a release from the feed without deleting it (reversible) —
+  // `railcast yank` from the CLI. Sparkle never downgrades, so the confirm
+  // spells out who this does and doesn't help.
+  async function onToggleYank(appId: string, release: Release) {
+    const yank = release.yanked !== 1;
+    if (
+      yank &&
+      !window.confirm(
+        `Hide ${release.version} (build ${release.build_number}, ${release.channel}) from the feed? ` +
+          `New update checks get the previous release again. Anyone who already installed it stays on it — ` +
+          `Sparkle never downgrades — so ship a fix with a higher build number too. You can restore it any time.`
+      )
+    ) {
+      return;
+    }
+    const key = `${appId}:${release.id}`;
+    setYankingKey(key);
+    setReleasesError((prev) => ({ ...prev, [appId]: "" }));
+    try {
+      if (yank) await api.yankRelease(appId, release.id);
+      else await api.unyankRelease(appId, release.id);
+      setReleasesByApp((prev) => ({
+        ...prev,
+        [appId]: (prev[appId] ?? []).map((r) => (r.id === release.id ? { ...r, yanked: yank ? 1 : 0 } : r)),
+      }));
+    } catch (err) {
+      // 409: "can't yank the only live release on this channel" — already readable.
+      setReleasesError((prev) => ({
+        ...prev,
+        [appId]: err instanceof ApiError ? err.message : "Couldn't change the release",
+      }));
+    } finally {
+      setYankingKey((cur) => (cur === key ? null : cur));
+    }
+  }
+
+  async function onSetRedirect(app: App, target: string | null) {
+    if (
+      target !== null &&
+      !window.confirm(
+        `Send every installed copy of "${app.name || app.id}" to ${target}? Their update checks will be ` +
+          `redirected there instead of this feed. That feed has to be signed with the same key. You can ` +
+          `undo this here at any time.`
+      )
+    ) {
+      return;
+    }
+    setRedirectBusy(app.id);
+    setRedirectError((prev) => ({ ...prev, [app.id]: "" }));
+    try {
+      await api.setFeedRedirect(app.id, target);
+      setRedirectInput((prev) => ({ ...prev, [app.id]: "" }));
+      await refresh();
+    } catch (err) {
+      setRedirectError((prev) => ({
+        ...prev,
+        [app.id]: err instanceof ApiError ? err.message : "Couldn't change the redirect",
+      }));
+    } finally {
+      setRedirectBusy(null);
+    }
+  }
+
+  // Downloads releases.json-equivalent data (every release with signatures and
+  // hashes, plus ready-made appcasts when a files URL is given). The files
+  // themselves come from `railcast export` — a browser shouldn't pull gigabytes.
+  async function onExport(app: App) {
+    setExportBusy(app.id);
+    setExportError((prev) => ({ ...prev, [app.id]: "" }));
+    try {
+      const filesUrl = (exportFilesUrl[app.id] ?? "").trim();
+      const data = await api.exportApp(app.id, filesUrl || undefined);
+      const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
+      const href = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = href;
+      link.download = `${app.id}-export.json`;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(href);
+    } catch (err) {
+      setExportError((prev) => ({
+        ...prev,
+        [app.id]: err instanceof ApiError ? err.message : "Couldn't export",
+      }));
+    } finally {
+      setExportBusy(null);
+    }
+  }
+
+  async function onDeleteAccount() {
+    setDeleteBusy(true);
+    setDeleteError(null);
+    try {
+      await api.deleteAccount(deleteEmail);
+      window.location.href = "/";
+    } catch (err) {
+      setDeleteError(err instanceof ApiError ? err.message : "Couldn't delete the account");
+      setDeleteBusy(false);
     }
   }
 
@@ -268,7 +384,7 @@ export default function DashboardPage() {
             {r.yanked === 1 && (
               <span
                 className="rounded bg-amber-50 px-1.5 py-0.5 text-[11px] font-medium uppercase tracking-wide text-amber-700"
-                title="Hidden from the appcast — undo with: railcast yank <version> --undo"
+                title="Hidden from the appcast — use Restore to bring it back"
               >
                 yanked
               </span>
@@ -289,14 +405,29 @@ export default function DashboardPage() {
             {r.sha256.slice(0, 12)}…
           </p>
         </div>
-        <button
-          type="button"
-          onClick={() => onDeleteRelease(appId, r)}
-          disabled={deletingReleaseKey === key}
-          className="shrink-0 text-xs text-red-600 hover:underline disabled:opacity-50"
-        >
-          {deletingReleaseKey === key ? "Deleting…" : "Delete"}
-        </button>
+        <div className="flex shrink-0 items-center gap-3">
+          <button
+            type="button"
+            onClick={() => onToggleYank(appId, r)}
+            disabled={yankingKey === key}
+            className="text-xs text-ink/60 hover:text-accent hover:underline disabled:opacity-50"
+            title={
+              r.yanked === 1
+                ? "Put this release back into the feed"
+                : "Hide this release from the feed without deleting it"
+            }
+          >
+            {yankingKey === key ? "…" : r.yanked === 1 ? "Restore" : "Yank"}
+          </button>
+          <button
+            type="button"
+            onClick={() => onDeleteRelease(appId, r)}
+            disabled={deletingReleaseKey === key}
+            className="text-xs text-red-600 hover:underline disabled:opacity-50"
+          >
+            {deletingReleaseKey === key ? "Deleting…" : "Delete"}
+          </button>
+        </div>
       </div>
     );
   };
@@ -313,6 +444,11 @@ export default function DashboardPage() {
             <p className="mt-0.5 font-mono text-xs text-ink/50">
               {api.base}/{app.id}/appcast.xml
             </p>
+            {app.feed_redirect_url && (
+              <p className="mt-1 break-all text-xs text-amber-700">
+                Feed redirects to <span className="font-mono">{app.feed_redirect_url}</span>
+              </p>
+            )}
           </div>
           <div className="flex items-center gap-4">
             <button
@@ -356,6 +492,74 @@ export default function DashboardPage() {
             ) : (
               <div className="space-y-2">{releases?.map((r) => releaseRow(app.id, r))}</div>
             )}
+
+            <div className="mt-4 space-y-5 border-t border-line pt-4">
+              <div>
+                <h3 className="text-xs font-semibold uppercase tracking-wide text-ink/50">Move the feed</h3>
+                <p className="mt-1 text-xs text-ink/50">
+                  Installed copies keep asking this feed&apos;s URL. Send them to a new host (HTTP 302) without
+                  shipping a release. The new feed must be signed with the same key. The CLI,{" "}
+                  <span className="font-mono">railcast redirect</span>, also checks that the target looks like an
+                  appcast first; here that&apos;s on you.
+                </p>
+                <div className="mt-2 flex flex-wrap items-center gap-2">
+                  <input
+                    className="input min-w-0 flex-1"
+                    placeholder="https://updates.example.com/appcast.xml"
+                    value={redirectInput[app.id] ?? ""}
+                    onChange={(e) => setRedirectInput((prev) => ({ ...prev, [app.id]: e.target.value }))}
+                  />
+                  <button
+                    type="button"
+                    className="btn"
+                    disabled={redirectBusy === app.id || !(redirectInput[app.id] ?? "").trim()}
+                    onClick={() => onSetRedirect(app, (redirectInput[app.id] ?? "").trim())}
+                  >
+                    {redirectBusy === app.id ? "Saving…" : "Redirect"}
+                  </button>
+                  {app.feed_redirect_url && (
+                    <button
+                      type="button"
+                      className="btn-secondary text-sm"
+                      disabled={redirectBusy === app.id}
+                      onClick={() => onSetRedirect(app, null)}
+                    >
+                      Clear redirect
+                    </button>
+                  )}
+                </div>
+                {redirectError[app.id] && <p className="mt-2 text-xs text-red-600">{redirectError[app.id]}</p>}
+              </div>
+
+              <div>
+                <h3 className="text-xs font-semibold uppercase tracking-wide text-ink/50">Export</h3>
+                <p className="mt-1 text-xs text-ink/50">
+                  Download every release with its signature and hash, plus ready-made feeds for the host you give
+                  below. The files themselves come from the CLI:
+                </p>
+                <CommandBlock
+                  className="mt-2"
+                  command={`railcast export --app ${app.id} --out ./export --files-url https://updates.example.com/files`}
+                />
+                <div className="mt-2 flex flex-wrap items-center gap-2">
+                  <input
+                    className="input min-w-0 flex-1"
+                    placeholder="Files URL for the feeds (optional): https://updates.example.com/files"
+                    value={exportFilesUrl[app.id] ?? ""}
+                    onChange={(e) => setExportFilesUrl((prev) => ({ ...prev, [app.id]: e.target.value }))}
+                  />
+                  <button
+                    type="button"
+                    className="btn-secondary text-sm"
+                    disabled={exportBusy === app.id}
+                    onClick={() => onExport(app)}
+                  >
+                    {exportBusy === app.id ? "Exporting…" : "Download JSON"}
+                  </button>
+                </div>
+                {exportError[app.id] && <p className="mt-2 text-xs text-red-600">{exportError[app.id]}</p>}
+              </div>
+            </div>
           </div>
         )}
       </div>
@@ -525,11 +729,11 @@ export default function DashboardPage() {
           )}
           {appList.length > 0 && (
             <p className="text-xs text-ink/50">
-              Click <span className="font-mono">releases</span> on an app to see and delete its
-              published builds — the same list <span className="font-mono">railcast list</span> and{" "}
-              <span className="font-mono">railcast cleanup</span> use from the CLI. Yanking, exporting
-              and feed redirects are CLI-only for now (<span className="font-mono">railcast yank</span>,{" "}
-              <span className="font-mono">export</span>, <span className="font-mono">redirect</span>).
+              Click <span className="font-mono">releases</span> on an app to see its published builds,
+              yank or delete them, move its feed to another host, or export everything — the same things{" "}
+              <span className="font-mono">railcast list</span>, <span className="font-mono">yank</span>,{" "}
+              <span className="font-mono">redirect</span>, <span className="font-mono">export</span> and{" "}
+              <span className="font-mono">cleanup</span> do from the CLI.
             </p>
           )}
           {inlineApps.map(appRow)}
@@ -543,6 +747,57 @@ export default function DashboardPage() {
             <div className="mt-4 space-y-3">{restApps.map(appRow)}</div>
           </details>
         )}
+      </section>
+
+      <section>
+        <h2 className="mb-3 text-sm font-semibold uppercase tracking-wide text-ink/50">Danger zone</h2>
+        <div className="card space-y-3">
+          <p className="text-sm text-ink/70">
+            Delete your account and everything under it: apps, releases, uploaded builds, tokens. Feeds stop
+            answering; apps that are already installed keep running but can no longer find updates. This can&apos;t
+            be undone — export what you need first.
+          </p>
+          {!deleteOpen ? (
+            <button type="button" className="btn-secondary text-sm text-red-600" onClick={() => setDeleteOpen(true)}>
+              Delete account…
+            </button>
+          ) : (
+            <div className="space-y-2">
+              <label className="block text-xs text-ink/50">
+                Type your email (<span className="font-mono">{me.email}</span>) to confirm
+              </label>
+              <div className="flex flex-wrap items-center gap-2">
+                <input
+                  className="input min-w-0 flex-1"
+                  value={deleteEmail}
+                  onChange={(e) => setDeleteEmail(e.target.value)}
+                  autoComplete="off"
+                />
+                <button
+                  type="button"
+                  className="btn"
+                  disabled={deleteBusy || deleteEmail.trim().toLowerCase() !== me.email.toLowerCase()}
+                  onClick={onDeleteAccount}
+                >
+                  {deleteBusy ? "Deleting…" : "Delete everything"}
+                </button>
+                <button
+                  type="button"
+                  className="btn-secondary text-sm"
+                  disabled={deleteBusy}
+                  onClick={() => {
+                    setDeleteOpen(false);
+                    setDeleteEmail("");
+                    setDeleteError(null);
+                  }}
+                >
+                  Cancel
+                </button>
+              </div>
+              {deleteError && <p className="text-xs text-red-600">{deleteError}</p>}
+            </div>
+          )}
+        </div>
       </section>
     </main>
   );
