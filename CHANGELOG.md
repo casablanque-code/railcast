@@ -48,6 +48,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   doesn't ship its command-line updater) against a local Worker: publish with the CLI, read
   the feed, `redirect` to another host and back (verified with Sparkle 2.10.0).
 
+- Account deletion: `DELETE /api/me` (session only, the caller types their own email) removes
+  the account, its apps, releases, uploaded builds, tokens, sessions and pending login links.
+  `GET /:appId/export` also accepts the dashboard session.
+
 ### Fixed
 - `/:appId/feed-redirect` and `/:appId/export` weren't routed through the Worker, so
   `railcast redirect` got HTTP 405 (found by the local end-to-end run).

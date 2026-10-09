@@ -2100,3 +2100,83 @@ describe("rate limiter", () => {
     expect(count!.c).toBe(10); // 12 attempts, the 2 rejected ones left no row
   });
 });
+
+describe("DELETE /api/me (delete account)", () => {
+  async function emailOf(userId: string): Promise<string> {
+    const row = await env.DB.prepare(`SELECT email FROM users WHERE id = ?`).bind(userId).first<{ email: string }>();
+    return row!.email;
+  }
+  const del = (cookie: string | null, body: unknown, extra: Record<string, string> = {}) =>
+    SELF.fetch("https://railcast.test/api/me", {
+      method: "DELETE",
+      headers: { ...(cookie ? { Cookie: cookie } : {}), "Content-Type": "application/json", ...extra },
+      body: typeof body === "string" ? body : JSON.stringify(body),
+    });
+  const count = async (sql: string, ...binds: unknown[]) =>
+    (await env.DB.prepare(sql).bind(...binds).first<{ c: number }>())!.c;
+
+  it("removes the account and everything under it, and leaves other accounts alone", async () => {
+    const { userId, token, appId } = await seedUserAppAndToken();
+    const second = await seedSecondApp(userId);
+    await publishVersion(token, appId, "1.0.0", 1);
+    const email = await emailOf(userId);
+    const cookie = await seedSession(userId);
+    await env.DB.prepare(`INSERT INTO magic_links (token, email, expires_at, used) VALUES (?, ?, ?, 0)`)
+      .bind("link-hash-" + crypto.randomUUID(), email, Math.floor(Date.now() / 1000) + 600)
+      .run();
+
+    const other = await seedUserAppAndToken();
+    await publishVersion(other.token, other.appId, "1.0.0", 1);
+
+    const res = await del(cookie, { confirm_email: email.toUpperCase() }); // case-insensitive
+    expect(res.status).toBe(204);
+    expect(res.headers.get("Set-Cookie")).toContain("Max-Age=0");
+
+    expect(await count(`SELECT COUNT(*) AS c FROM users WHERE id = ?`, userId)).toBe(0);
+    expect(await count(`SELECT COUNT(*) AS c FROM apps WHERE owner_user_id = ?`, userId)).toBe(0);
+    expect(await count(`SELECT COUNT(*) AS c FROM versions WHERE app_id IN (?, ?)`, appId, second)).toBe(0);
+    expect(await count(`SELECT COUNT(*) AS c FROM api_tokens WHERE user_id = ?`, userId)).toBe(0);
+    expect(await count(`SELECT COUNT(*) AS c FROM sessions WHERE user_id = ?`, userId)).toBe(0);
+    expect(await count(`SELECT COUNT(*) AS c FROM magic_links WHERE email = ?`, email)).toBe(0);
+    expect((await env.BUILDS.list({ prefix: `${appId}/` })).objects).toHaveLength(0);
+    expect((await SELF.fetch(`https://railcast.test/${appId}/appcast.xml`)).status).toBe(404);
+
+    // the old session and token are dead...
+    expect((await SELF.fetch("https://railcast.test/api/me", { headers: { Cookie: cookie } })).status).toBe(401);
+    expect((await SELF.fetch("https://railcast.test/api/apps", { headers: { Authorization: `Bearer ${token}` } })).status).toBe(401);
+    // ...and the other account is untouched.
+    expect((await SELF.fetch(`https://railcast.test/${other.appId}/appcast.xml`)).status).toBe(200);
+    expect((await env.BUILDS.list({ prefix: `${other.appId}/` })).objects.length).toBeGreaterThan(0);
+  });
+
+  it("needs the exact email, a session, and a same-origin request", async () => {
+    const { userId, token } = await seedUserAppAndToken();
+    const email = await emailOf(userId);
+    const cookie = await seedSession(userId);
+
+    expect((await del(cookie, { confirm_email: "someone-else@example.com" })).status).toBe(400);
+    expect((await del(cookie, {})).status).toBe(400);
+    expect((await del(cookie, "not json")).status).toBe(400);
+    expect((await del(null, { confirm_email: email })).status).toBe(401);
+    // a bearer token — even an account-wide one — can't delete the account
+    expect((await del(null, { confirm_email: email }, { Authorization: `Bearer ${token}` })).status).toBe(401);
+    expect((await del(cookie, { confirm_email: email }, { Origin: "https://evil.example" })).status).toBe(403);
+
+    expect(await count(`SELECT COUNT(*) AS c FROM users WHERE id = ?`, userId)).toBe(1);
+  });
+});
+
+describe("export from the dashboard session", () => {
+  it("works with a session cookie, not just a bearer token", async () => {
+    const { userId, token, appId } = await seedUserAppAndToken();
+    await publishVersion(token, appId, "1.0.0", 1);
+    const cookie = await seedSession(userId);
+    const res = await SELF.fetch(`https://railcast.test/${appId}/export`, { headers: { Cookie: cookie } });
+    expect(res.status).toBe(200);
+    expect(((await res.json()) as { releases: unknown[] }).releases).toHaveLength(1);
+
+    const stranger = await seedUserAppAndToken();
+    const strangerCookie = await seedSession(stranger.userId);
+    expect((await SELF.fetch(`https://railcast.test/${appId}/export`, { headers: { Cookie: strangerCookie } })).status).toBe(403);
+  });
+});

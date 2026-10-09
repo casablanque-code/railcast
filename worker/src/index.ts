@@ -1085,6 +1085,14 @@ async function handleApiDeleteApp(request: Request, env: Env, appId: string): Pr
   // every API surface (appcast, listing, ownership checks), which is what
   // actually matters; a few orphaned objects under a now-unreachable
   // prefix cost storage, not security.
+  await deleteAppObjects(env, appId);
+
+  return new Response(null, { status: 204 });
+}
+
+// Removes every uploaded build under an app's prefix. Best effort, see above;
+// whatever it misses is swept by the nightly orphan cleanup.
+async function deleteAppObjects(env: Env, appId: string): Promise<void> {
   let cursor: string | undefined;
   do {
     const listed = await env.BUILDS.list({ prefix: `${appId}/`, cursor });
@@ -1093,8 +1101,66 @@ async function handleApiDeleteApp(request: Request, env: Env, appId: string): Pr
     }
     cursor = listed.truncated ? listed.cursor : undefined;
   } while (cursor);
+}
 
-  return new Response(null, { status: 204 });
+// DELETE /api/me  {"confirm_email": "<your email>"}
+//
+// Deletes the account and everything under it: apps (feeds stop answering),
+// releases, uploaded builds, tokens, sessions, pending login links. Session
+// only — a bearer token, even an account-wide one, can't do this — and the
+// caller has to type their own email, so a stray click or a stolen-but-idle
+// tab can't wipe an account by accident. Installed copies of the user's apps
+// keep working until Sparkle next looks for an update, then find no feed.
+async function handleApiDeleteMe(request: Request, env: Env): Promise<Response> {
+  const user = await getSessionUser(request, env);
+  if (!user) return jsonResponse({ error: "unauthorized" }, 401);
+
+  const origin = new URL(request.url).origin;
+  if (!hasValidOrigin(request, origin)) {
+    return jsonResponse({ error: "bad_origin" }, 403);
+  }
+
+  let body: { confirm_email?: unknown };
+  try {
+    body = (await request.json()) as { confirm_email?: unknown };
+  } catch {
+    return jsonResponse({ error: "invalid_input", message: "body must be JSON with confirm_email" }, 400);
+  }
+  if (typeof body.confirm_email !== "string" || body.confirm_email.trim().toLowerCase() !== user.email.toLowerCase()) {
+    return jsonResponse(
+      { error: "invalid_input", message: "Type your account email exactly to confirm deleting the account." },
+      400
+    );
+  }
+
+  const { results } = await env.DB.prepare(`SELECT id FROM apps WHERE owner_user_id = ?`)
+    .bind(user.id)
+    .all<{ id: string }>();
+  const appIds = (results ?? []).map((r) => r.id);
+
+  // One atomic batch for everything in D1, children before parents (D1 doesn't
+  // enforce foreign keys by default, but this order is valid either way).
+  await env.DB.batch([
+    env.DB.prepare(`DELETE FROM versions WHERE app_id IN (SELECT id FROM apps WHERE owner_user_id = ?)`).bind(user.id),
+    env.DB.prepare(
+      `DELETE FROM api_tokens WHERE user_id = ? OR app_id IN (SELECT id FROM apps WHERE owner_user_id = ?)`
+    ).bind(user.id, user.id),
+    env.DB.prepare(`DELETE FROM apps WHERE owner_user_id = ?`).bind(user.id),
+    env.DB.prepare(`DELETE FROM sessions WHERE user_id = ?`).bind(user.id),
+    env.DB.prepare(`DELETE FROM email_verifications WHERE user_id = ?`).bind(user.id),
+    env.DB.prepare(`DELETE FROM magic_links WHERE email = ?`).bind(user.email),
+    env.DB.prepare(`DELETE FROM users WHERE id = ?`).bind(user.id),
+  ]);
+
+  for (const appId of appIds) {
+    await purgeAppcastCache(origin, appId);
+    await deleteAppObjects(env, appId);
+  }
+
+  return new Response(null, {
+    status: 204,
+    headers: { "Set-Cookie": "session=; Path=/; HttpOnly; Max-Age=0" },
+  });
 }
 
 // Bearer-only by default (upload and version registration stay this way —
@@ -1679,7 +1745,8 @@ async function handleSetYanked(
 // appcasts pointing at wherever the files will be hosted next. The CLI's
 // `railcast export` downloads the files and writes all of this to disk.
 async function handleExport(request: Request, env: Env, appId: string): Promise<Response> {
-  const auth = await requireAppOwnership(request, env, appId, "read");
+  // allowSession: the dashboard's "Export" button downloads this same JSON.
+  const auth = await requireAppOwnership(request, env, appId, "read", { allowSession: true });
   if (!auth.ok) return auth.response;
 
   const url = new URL(request.url);
@@ -2020,6 +2087,9 @@ async function route(request: Request, env: Env): Promise<Response> {
     if (url.pathname.startsWith("/api/")) {
       if (url.pathname === "/api/me" && request.method === "GET") {
         return handleApiMe(request, env);
+      }
+      if (url.pathname === "/api/me" && request.method === "DELETE") {
+        return handleApiDeleteMe(request, env);
       }
       if (url.pathname === "/api/apps" && request.method === "GET") {
         return handleApiListApps(request, env);
