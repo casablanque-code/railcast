@@ -55,6 +55,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Dashboard: yank/restore a release, move the feed (redirect), export (JSON download) and delete
   the account, in addition to listing and deleting releases.
 
+- `AGENTS.md`: how an AI agent should publish with Railcast (beta first, yank instead of delete,
+  what needs a human) and how to work on this repo.
+
 ### Fixed
 - `/:appId/feed-redirect` and `/:appId/export` weren't routed through the Worker, so
   `railcast redirect` got HTTP 405 (found by the local end-to-end run).
