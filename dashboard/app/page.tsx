@@ -76,6 +76,31 @@ export default function LandingPage() {
       </section>
 
       <section className="border-t border-line py-10">
+        <h2 className="text-xs font-semibold uppercase tracking-wide text-ink/50">
+          Already shipping with Sparkle?
+        </h2>
+        <p className="mt-4 text-sm text-ink/60">
+          Bring the signing key you already have. Installed copies keep trusting your updates, so
+          there&apos;s no new app version to ship first.
+        </p>
+        <div className="mt-4">
+          <CommandBlock command="railcast init --app myapp --import-key sparkle_private_key --token <token>" />
+        </div>
+      </section>
+
+      <section className="border-t border-line py-10">
+        <h2 className="text-xs font-semibold uppercase tracking-wide text-ink/50">Never locked in</h2>
+        <p className="mt-4 text-sm text-ink/60">
+          Export every release, signature and a ready-made feed with one command. Moving to your own
+          host? Redirect the old feed URL and installed apps follow you — no new release needed.
+        </p>
+        <div className="mt-4 space-y-2">
+          <CommandBlock command="railcast export --app myapp --out ./export" />
+          <CommandBlock command="railcast redirect --to https://updates.myapp.com/appcast.xml" />
+        </div>
+      </section>
+
+      <section className="border-t border-line py-10">
         <h2 className="text-xs font-semibold uppercase tracking-wide text-ink/50">Open source</h2>
         <p className="mt-4 text-sm text-ink/70">
           Free to use, and free to self-host. Source on{" "}

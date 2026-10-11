@@ -12,6 +12,8 @@ Railcast is that missing piece. Push a build, get back a signed, hosted feed. No
 - EdDSA signing happens on your machine: Railcast never sees your private key, so even a full compromise of the server can't produce an update your users' Sparkle will accept
 - Release channels (stable / beta) out of the box
 - A CLI that turns "build → signed, hosted release" into one command
+- Already shipping with Sparkle? Bring your existing signing key (`railcast init --import-key`):
+  installed copies keep trusting your updates, no new app version needed
 - Pull a broken release without deleting anything (`railcast yank`)
 - No lock-in: `railcast export` hands you every file, signature and a ready-made feed, and
   `railcast redirect` moves already-installed apps to your own host without a new release
