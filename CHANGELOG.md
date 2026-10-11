@@ -6,6 +6,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html)
 (pre-1.0, so minor bumps may still carry breaking changes).
 
+## [Unreleased]
+
+### Fixed
+- After a yank, restore or publish the feed URL showed the old XML in a browser until a hard
+  refresh: the feed was sent with `max-age=60`. Clients now get `Cache-Control: no-cache`; only
+  the edge copy is kept for 60 s (`s-maxage`).
+
 ## [0.10.0] - 2026-10-08
 
 ### Added

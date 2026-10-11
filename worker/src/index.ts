@@ -67,6 +67,23 @@ const MIN_SYSTEM_VERSION_RE = /^\d{1,3}(\.\d{1,3}){0,2}$/;
 // invisible; it just stops every update check from hitting the Worker and D1.
 const APPCAST_EDGE_TTL_SECONDS = 60;
 
+// Two different Cache-Control values on purpose. What the edge cache stores
+// carries s-maxage, the TTL the Cache API honors. What a CLIENT gets is
+// no-cache: browsers (and Sparkle) always ask again, so a yank, a publish or a
+// redirect shows up on the next request instead of after a stale max-age
+// expires in someone's browser. Only the Worker-side copy is kept for 60 s.
+function edgeCopy(response: Response): Response {
+  const copy = new Response(response.clone().body, response);
+  copy.headers.set("Cache-Control", `public, s-maxage=${APPCAST_EDGE_TTL_SECONDS}`);
+  return copy;
+}
+
+function forClient(response: Response): Response {
+  const out = new Response(response.body, response);
+  out.headers.set("Cache-Control", "no-cache");
+  return out;
+}
+
 function appcastCacheKey(origin: string, appId: string): Request {
   return new Request(`${origin}/${appId}/appcast.xml`, { method: "GET" });
 }
@@ -1883,7 +1900,7 @@ async function handleAppcast(request: Request, env: Env, appId: string): Promise
   if (cacheable) {
     try {
       const hit = await caches.default.match(cacheKey);
-      if (hit) return hit;
+      if (hit) return forClient(hit);
     } catch {
       // cache trouble must never break the feed — fall through to D1
     }
@@ -1913,19 +1930,17 @@ async function handleAppcast(request: Request, env: Env, appId: string): Promise
   if (redirectTo) {
     const redirect = new Response("Moved", {
       status: 302,
-      headers: {
-        Location: redirectTo,
-        "Content-Type": "text/plain; charset=utf-8",
-        "Cache-Control": cacheable ? `public, max-age=${APPCAST_EDGE_TTL_SECONDS}` : "private, no-store",
-      },
+      headers: { Location: redirectTo, "Content-Type": "text/plain; charset=utf-8" },
     });
     if (cacheable) {
       try {
-        await caches.default.put(cacheKey, redirect.clone());
+        await caches.default.put(cacheKey, edgeCopy(redirect));
       } catch {
         // best effort
       }
+      return forClient(redirect);
     }
+    redirect.headers.set("Cache-Control", "private, no-store");
     return redirect;
   }
 
@@ -1947,20 +1962,17 @@ async function handleAppcast(request: Request, env: Env, appId: string): Promise
 
   const response = new Response(xml, {
     status: 200,
-    headers: {
-      "Content-Type": "application/xml; charset=utf-8",
-      "Cache-Control": cacheable
-        ? `public, max-age=${APPCAST_EDGE_TTL_SECONDS}`
-        : "private, no-store",
-    },
+    headers: { "Content-Type": "application/xml; charset=utf-8" },
   });
   if (cacheable) {
     try {
-      await caches.default.put(cacheKey, response.clone());
+      await caches.default.put(cacheKey, edgeCopy(response));
     } catch {
       // best effort
     }
+    return forClient(response);
   }
+  response.headers.set("Cache-Control", "private, no-store");
   return response;
 }
 

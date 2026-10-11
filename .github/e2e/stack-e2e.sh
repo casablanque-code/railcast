@@ -83,6 +83,9 @@ grep -q '<sparkle:shortVersionString>1.1.0<' "$WORK/feed.xml" || fail "feed does
 grep -q '<sparkle:minimumSystemVersion>12.0<' "$WORK/feed.xml" || fail "minimum system version missing from the feed"
 grep -q 'sparkle:format="markdown"' "$WORK/feed.xml" || fail "release notes aren't marked as markdown"
 ok "feed offers 1.1.0 with minimum system version and markdown notes"
+curl -sD - -o /dev/null "$FEED" | tr -d '\r' | grep -qi '^cache-control: no-cache$' \
+  || fail "the feed must be sent with Cache-Control: no-cache (a browser must not hold it)"
+ok "the feed tells clients to revalidate (Cache-Control: no-cache)"
 
 for v in 1.0.0 1.1.0; do
   sig="$(python3 - "$WORK/feed.xml" "$v" <<'PY'

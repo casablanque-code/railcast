@@ -1684,7 +1684,7 @@ describe("appcast edge cache", () => {
 
     const first = await SELF.fetch(`https://railcast.test/${appId}/appcast.xml`);
     expect(first.status).toBe(200);
-    expect(first.headers.get("Cache-Control")).toContain("public");
+    expect(first.headers.get("Cache-Control")).toBe("no-cache");
     expect(await first.text()).toContain("<sparkle:version>1</sparkle:version>");
 
     // A row added behind the Worker's back stays invisible while the cached copy lives...
@@ -2178,5 +2178,39 @@ describe("export from the dashboard session", () => {
     const stranger = await seedUserAppAndToken();
     const strangerCookie = await seedSession(stranger.userId);
     expect((await SELF.fetch(`https://railcast.test/${appId}/export`, { headers: { Cookie: strangerCookie } })).status).toBe(403);
+  });
+});
+
+describe("feed Cache-Control for clients", () => {
+  // The edge cache keeps a copy for 60 s, but a browser must never hold the feed
+  // on its own — otherwise a yank or a publish only shows after a hard refresh.
+  const get = (appId: string) => SELF.fetch(`https://railcast.test/${appId}/appcast.xml`, { redirect: "manual" });
+
+  it("is no-cache both on the first (uncached) and the cached response", async () => {
+    const { token, appId } = await seedUserAppAndToken();
+    await publishVersion(token, appId, "1.0.0", 1);
+    const first = await get(appId);
+    const second = await get(appId); // served from the edge cache
+    for (const res of [first, second]) {
+      expect(res.status).toBe(200);
+      expect(res.headers.get("Cache-Control")).toBe("no-cache");
+      expect(res.headers.get("Content-Type")).toContain("application/xml");
+    }
+    expect(await second.text()).toContain("<sparkle:version>1</sparkle:version>");
+  });
+
+  it("is no-cache on a redirect too, cached or not", async () => {
+    const { token, appId } = await seedUserAppAndToken();
+    await SELF.fetch(`https://railcast.test/${appId}/feed-redirect`, {
+      method: "PUT",
+      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ url: "https://updates.example.com/appcast.xml" }),
+    });
+    for (let i = 0; i < 2; i++) {
+      const res = await get(appId);
+      expect(res.status).toBe(302);
+      expect(res.headers.get("Location")).toBe("https://updates.example.com/appcast.xml");
+      expect(res.headers.get("Cache-Control")).toBe("no-cache");
+    }
   });
 });
