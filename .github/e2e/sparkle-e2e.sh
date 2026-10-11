@@ -150,7 +150,7 @@ log "railcast redirect --clear"
 "$RAILCAST" redirect --clear
 code="$(curl -s -o /dev/null -w '%{http_code}' "$FEED")"
 [ "$code" = "200" ] || fail "feed should be served again after --clear, got HTTP $code"
-curl -fsS "$FEED" | grep -q '<sparkle:shortVersionString>1.2.0<' || fail "after --clear the Railcast feed doesn't offer 1.2.0"
+grep -q '<sparkle:shortVersionString>1.2.0<' <<<"$(curl -fsS "$FEED")" || fail "after --clear the Railcast feed doesn't offer 1.2.0"
 # Installed build 3 is current for Railcast (nothing newer), but the static
 # feed's build 9 would still count as an update if the client kept being redirected.
 probe "after --clear: back on the Railcast feed, nothing newer than build 3" 3 none

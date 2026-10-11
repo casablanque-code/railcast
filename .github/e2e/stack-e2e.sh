@@ -24,6 +24,13 @@ fail() { printf '\nFAIL: %s\n' "$*" >&2; exit 1; }
 cleanup() { for p in "${PIDS[@]:-}"; do [ -n "$p" ] && kill "$p" 2>/dev/null || true; done; }
 trap cleanup EXIT
 
+# `cmd | grep -q` is unsafe under pipefail: grep -q exits at the first match, the
+# writer gets SIGPIPE and the whole pipeline "fails" (or, in `|| fail`/`&& fail`
+# checks, silently passes) depending on timing. So capture output first, then
+# grep a here-string.
+feed() { curl -fsS "$FEED"; }
+has()  { grep -qi -- "$1" <<<"$2"; }   # has <pattern> <text>
+
 http_code() { curl -s -o /dev/null -w '%{http_code}' "$@"; }
 expect_code() { # description expected-code curl-args...
   local desc="$1" want="$2"; shift 2
@@ -83,7 +90,8 @@ grep -q '<sparkle:shortVersionString>1.1.0<' "$WORK/feed.xml" || fail "feed does
 grep -q '<sparkle:minimumSystemVersion>12.0<' "$WORK/feed.xml" || fail "minimum system version missing from the feed"
 grep -q 'sparkle:format="markdown"' "$WORK/feed.xml" || fail "release notes aren't marked as markdown"
 ok "feed offers 1.1.0 with minimum system version and markdown notes"
-curl -sD - -o /dev/null "$FEED" | tr -d '\r' | grep -qi '^cache-control: no-cache$' \
+HEADERS="$(curl -sD - -o /dev/null "$FEED" | tr -d '\r')"
+grep -qi '^cache-control: no-cache$' <<<"$HEADERS" \
   || fail "the feed must be sent with Cache-Control: no-cache (a browser must not hold it)"
 ok "the feed tells clients to revalidate (Cache-Control: no-cache)"
 
@@ -104,12 +112,12 @@ ok "OpenSSL verifies both signatures with the imported key (independent of our o
 # --- 3. yank / restore --------------------------------------------------------
 step "railcast yank / --undo"
 "$RAILCAST" yank 1.1.0 > "$WORK/yank.log" 2>&1 || { cat "$WORK/yank.log"; fail "yank failed"; }
-curl -fsS "$FEED" | grep -q '<sparkle:shortVersionString>1.1.0<' && fail "1.1.0 is still in the feed after yank"
-curl -fsS "$FEED" | grep -q '<sparkle:shortVersionString>1.0.0<' || fail "1.0.0 should be served after yanking 1.1.0"
+has '<sparkle:shortVersionString>1.1.0<' "$(feed)" && fail "1.1.0 is still in the feed after yank"
+has '<sparkle:shortVersionString>1.0.0<' "$(feed)" || fail "1.0.0 should be served after yanking 1.1.0"
 ok "yanked release is gone from the feed, the previous one is served"
 must_fail "yanking the only live release" "$RAILCAST" yank 1.0.0
 "$RAILCAST" yank 1.1.0 --undo >/dev/null 2>&1 || fail "yank --undo failed"
-curl -fsS "$FEED" | grep -q '<sparkle:shortVersionString>1.1.0<' || fail "1.1.0 should be back after --undo"
+has '<sparkle:shortVersionString>1.1.0<' "$(feed)" || fail "1.1.0 should be back after --undo"
 ok "restored"
 
 # --- 4. export with a mock file host -----------------------------------------
@@ -143,8 +151,8 @@ grep -q '<sparkle:shortVersionString>1.0.0<' "$WORK/out/appcast.xml" || fail "ex
 grep -q '<sparkle:shortVersionString>1.1.0<' "$WORK/out/appcast.xml" && fail "exported appcast contains the yanked 1.1.0"
 ok "exported appcast points at the new host and leaves out the yanked release"
 
-"$RAILCAST" export --app "$APP_ID" --out "$WORK/out" --files-url "$FILES_URL" 2>&1 | grep -q "already there" \
-  || fail "a second export should skip files that are already there"
+SECOND="$("$RAILCAST" export --app "$APP_ID" --out "$WORK/out" --files-url "$FILES_URL" 2>&1)" || { echo "$SECOND"; fail "the second export failed"; }
+has "already there" "$SECOND" || fail "a second export should skip files that are already there"
 ok "re-running export skips what it already has"
 
 expect_code "export through the dashboard session" 200 -H "Cookie: $E2E_SESSION" "$RAILCAST_BASE_URL/$APP_ID/export"
@@ -152,7 +160,7 @@ expect_code "export through the dashboard session" 200 -H "Cookie: $E2E_SESSION"
 echo "tampered content" > "$WORK/files/$APP_ID/MyApp-1.0.0.zip"
 rm -rf "$WORK/out2"
 must_fail "export of a file that doesn't match its hash" "$RAILCAST" export --app "$APP_ID" --out "$WORK/out2"
-echo "$OUT" | grep -qi "mismatch" || fail "the failure should mention a hash/size mismatch, got: $OUT"
+has "mismatch" "$OUT" || fail "the failure should mention a hash/size mismatch, got: $OUT"
 [ -z "$(find "$WORK/out2" -name '.download-*' 2>/dev/null)" ] || fail "a failed download left a partial file behind"
 ok "tampered file detected (mismatch), nothing partial left behind"
 cp "$WORK/build/MyApp-1.0.0.zip" "$WORK/files/$APP_ID/MyApp-1.0.0.zip"
@@ -165,16 +173,16 @@ PIDS+=($!)
 for _ in $(seq 1 20); do curl -fsS "http://127.0.0.1:$STATIC_PORT/appcast.xml" -o /dev/null 2>/dev/null && break; sleep 0.5; done
 
 must_fail "redirect to something that isn't a feed" "$RAILCAST" redirect --to "http://127.0.0.1:$FILES_PORT/"
-echo "$OUT" | grep -qi "appcast" || fail "the refusal should say the target isn't an appcast, got: $OUT"
+has "appcast" "$OUT" || fail "the refusal should say the target isn't an appcast, got: $OUT"
 [ "$(http_code "$FEED")" = "200" ] || fail "a refused redirect must leave the feed alone"
 ok "a bad target is refused and the feed is unchanged"
 
 "$RAILCAST" redirect --to "http://127.0.0.1:$STATIC_PORT/appcast.xml" >/dev/null 2>&1 || fail "redirect --to failed"
 LOC="$(curl -s -o /dev/null -w '%{http_code} %{redirect_url}' "$FEED")"
 [ "$LOC" = "302 http://127.0.0.1:$STATIC_PORT/appcast.xml" ] || fail "feed should answer 302 to the static host, got: $LOC"
-curl -sL "$FEED" | grep -q "$FILES_URL" || fail "following the redirect should land on the exported feed"
+has "$FILES_URL" "$(curl -sL "$FEED")" || fail "following the redirect should land on the exported feed"
 ok "old feed URL answers 302 and lands on the exported feed"
-"$RAILCAST" redirect 2>&1 | grep -q "$STATIC_PORT" || fail "railcast redirect (no flags) should show the current target"
+has "$STATIC_PORT" "$("$RAILCAST" redirect 2>&1)" || fail "railcast redirect (no flags) should show the current target"
 
 "$RAILCAST" redirect --clear >/dev/null 2>&1 || fail "redirect --clear failed"
 expect_code "feed served by Railcast again after --clear" 200 "$FEED"
