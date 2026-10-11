@@ -48,6 +48,10 @@ cd cli       && go vet ./... && go test ./...
 cd dashboard && npm ci && npx tsc --noEmit && npm run build
 ```
 
+The whole stack (real Worker, real CLI, made-up data, a mock file host, OpenSSL verifying signatures) also
+runs locally, no Mac needed — `.github/e2e/stack-e2e.sh`, see the workflow `stack-e2e.yml` for the setup.
+`sparkle-e2e.yml` does the same on macOS with a real Sparkle client.
+
 **Conventions**
 - English everywhere: code comments, commit messages, help text, tool output. No other languages in artifacts.
 - Small commits with a body that explains why. New behavior comes with tests.

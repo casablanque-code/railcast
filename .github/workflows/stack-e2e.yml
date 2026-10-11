@@ -1,0 +1,51 @@
+name: Stack end-to-end
+
+# The real Worker (wrangler dev, local D1/R2) and the real CLI on Linux, with
+# made-up data and a mock file host: import a Sparkle-style key, publish, verify
+# signatures with OpenSSL, yank, export, move the feed, delete the account.
+# See .github/e2e/stack-e2e.sh. The macOS job with a real Sparkle client is
+# sparkle-e2e.yml.
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - "worker/**"
+      - "cli/**"
+      - ".github/e2e/**"
+      - ".github/workflows/stack-e2e.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  stack:
+    name: Import, publish, yank, export, redirect, delete (Linux)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: cli/go.mod
+          cache: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Build the Railcast CLI
+        working-directory: cli
+        run: |
+          go build -o "$RUNNER_TEMP/railcast" .
+          echo "RAILCAST=$RUNNER_TEMP/railcast" >> "$GITHUB_ENV"
+
+      - name: Start the Worker locally
+        run: bash .github/e2e/start-worker.sh
+
+      - name: End-to-end
+        run: bash .github/e2e/stack-e2e.sh
+
+      - name: Worker log
+        if: always()
+        run: cat "$RUNNER_TEMP/wrangler.log" || true

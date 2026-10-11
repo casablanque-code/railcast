@@ -44,6 +44,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `sign_update` (verified with Sparkle 2.10.0): an exported key imports cleanly and signatures
   are byte-identical to Sparkle's.
 
+- CI: `stack-e2e.yml` runs the real Worker and CLI on Linux with made-up data and a mock file
+  host (no Mac, no real app needed): import a Sparkle-style key, publish, verify the signatures
+  with OpenSSL, yank/restore, export (hash checks, tamper detection), move the feed, delete the
+  account. Re-introducing the routing bug fixed below makes it fail.
 - CI: `sparkle-e2e.yml` runs a real Sparkle client (built from source, the release archive
   doesn't ship its command-line updater) against a local Worker: publish with the CLI, read
   the feed, `redirect` to another host and back (verified with Sparkle 2.10.0).
