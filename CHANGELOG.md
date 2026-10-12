@@ -8,6 +8,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Dashboard component tests (vitest, jsdom, Testing Library; the API is mocked): yank/restore,
+  moving the feed, export, account deletion with the email confirmation, and the landing page's
+  import/move-out sections. Run in CI (`Dashboard` job). The release buttons and the delete-account
+  field got accessible names.
+
 ### Fixed
 - After a yank, restore or publish the feed URL showed the old XML in a browser until a hard
   refresh: the feed was sent with `max-age=60`. Clients now get `Cache-Control: no-cache`; only

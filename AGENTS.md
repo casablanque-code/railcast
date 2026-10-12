@@ -38,14 +38,15 @@ means no more updates for that app), `.railcast.json` (app id, not secret). All 
 **Layout**
 - `worker/` — TypeScript Cloudflare Worker (D1 database, R2 bucket), the API and the Sparkle feeds.
 - `cli/` — the Go CLI, one `main` package.
-- `dashboard/` — Next.js static export, served by the Worker as assets.
+- `dashboard/` — Next.js static export, served by the Worker as assets. Component tests (vitest + jsdom + Testing Library, API mocked) live in
+  `dashboard/test/`; navigation goes through `lib/nav.ts` so tests can intercept it.
 - `.github/e2e/`, `.github/workflows/` — CI, including a macOS end-to-end test against a real Sparkle client.
 
 **Check before you finish**
 ```bash
 cd worker    && npm ci && npx tsc --noEmit && npx vitest run
 cd cli       && go vet ./... && go test ./...
-cd dashboard && npm ci && npx tsc --noEmit && npm run build
+cd dashboard && npm ci && npx tsc --noEmit && npm test && npm run build
 ```
 
 The whole stack (real Worker, real CLI, made-up data, a mock file host, OpenSSL verifying signatures) also

@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { api, ApiError, type App, type Me, type Release, type TokenPreview } from "@/lib/api";
+import { goTo } from "@/lib/nav";
 import { CommandBlock } from "../CommandBlock";
 import { CopyButton } from "../CopyButton";
 
@@ -210,7 +211,7 @@ export default function DashboardPage() {
     setDeleteError(null);
     try {
       await api.deleteAccount(deleteEmail);
-      window.location.href = "/";
+      goTo("/");
     } catch (err) {
       setDeleteError(err instanceof ApiError ? err.message : "Couldn't delete the account");
       setDeleteBusy(false);
@@ -232,7 +233,7 @@ export default function DashboardPage() {
       })
       .catch((err) => {
         if (err instanceof ApiError && err.status === 401) {
-          window.location.href = "/";
+          goTo("/");
           return;
         }
         setLoadError("Couldn't reach the API. Check that the Worker is deployed and reachable.");
@@ -410,6 +411,7 @@ export default function DashboardPage() {
             type="button"
             onClick={() => onToggleYank(appId, r)}
             disabled={yankingKey === key}
+            aria-label={`${r.yanked === 1 ? "Restore" : "Yank"} ${r.version} (${r.channel})`}
             className="text-xs text-ink/60 hover:text-accent hover:underline disabled:opacity-50"
             title={
               r.yanked === 1
@@ -423,6 +425,7 @@ export default function DashboardPage() {
             type="button"
             onClick={() => onDeleteRelease(appId, r)}
             disabled={deletingReleaseKey === key}
+            aria-label={`Delete release ${r.version} (${r.channel})`}
             className="text-xs text-red-600 hover:underline disabled:opacity-50"
           >
             {deletingReleaseKey === key ? "Deleting…" : "Delete"}
@@ -763,11 +766,12 @@ export default function DashboardPage() {
             </button>
           ) : (
             <div className="space-y-2">
-              <label className="block text-xs text-ink/50">
+              <label htmlFor="delete-account-email" className="block text-xs text-ink/50">
                 Type your email (<span className="font-mono">{me.email}</span>) to confirm
               </label>
               <div className="flex flex-wrap items-center gap-2">
                 <input
+                  id="delete-account-email"
                   className="input min-w-0 flex-1"
                   value={deleteEmail}
                   onChange={(e) => setDeleteEmail(e.target.value)}
