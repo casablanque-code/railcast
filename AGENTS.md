@@ -22,12 +22,13 @@ means no more updates for that app), `.railcast.json` (app id, not secret). All 
 5. Verify afterwards: `railcast list` (add `--json` for machine-readable output), then fetch the feed URL.
 
 **Rules for agents**
-- Publish to **beta** first (`-c beta`) unless a human says otherwise. There is no `promote` command yet:
-  to go stable, publish the same archive to stable under a new filename. Stable goes to every user at
-  once, and Sparkle never downgrades — only ship to stable with explicit human approval.
+- Publish to **beta** first (`-c beta`) unless a human says otherwise. Going to stable is
+  `railcast promote <version>`: same file, nothing uploaded again, build number kept (it must be higher than
+  stable's latest). It asks for confirmation — **don't pass `--yes` without explicit human approval**: stable
+  goes to every user at once, and Sparkle never downgrades.
 - A bad release is fixed with `railcast yank <version>` (hides it from the feed, reversible with
   `--undo`) plus a new build with a higher build number. Don't delete releases to "fix" things.
-- Ask a human before anything destructive or far-reaching: `railcast cleanup`, deleting apps or the
+- Ask a human before anything destructive or far-reaching: `railcast promote --yes`, `railcast cleanup`, deleting apps or the
   account, `railcast redirect --to` (sends every installed copy to another feed), `init --import-key`.
 - Use the narrowest token: a per-app, publish-scope token for releasing, a read-scope token for
   listing. In CI pass it as `RAILCAST_TOKEN`; self-hosted instances use `RAILCAST_BASE_URL`.

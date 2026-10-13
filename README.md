@@ -10,7 +10,8 @@ Railcast is that missing piece. Push a build, get back a signed, hosted feed. No
 
 - A hosted `appcast.xml` for each app, served fast and cached at the edge
 - EdDSA signing happens on your machine: Railcast never sees your private key, so even a full compromise of the server can't produce an update your users' Sparkle will accept
-- Release channels (stable / beta) out of the box
+- Release channels (stable / beta) out of the box, and `railcast promote` to release a tested beta
+  build to stable without uploading it again
 - A CLI that turns "build → signed, hosted release" into one command
 - Already shipping with Sparkle? Bring your existing signing key (`railcast init --import-key`):
   installed copies keep trusting your updates, no new app version needed
@@ -117,6 +118,15 @@ Optional flags for either a first publish or an update:
 
 `--file`/`-f`, `--version`/`-v`, `--app`/`-a`, `--key`/`-k`, and `--token`/`-t` all have the same
 short forms shown earlier. Run `railcast publish --help` any time for the full, current flag list.
+
+## From beta to stable
+
+```bash
+railcast publish -f MyApp-2.0.0.zip --channel beta   # your testers get it first
+railcast promote 2.0.0                               # later: the same build, to everyone
+```
+
+`promote` shows what will happen and asks first — it goes to every user on stable. Nothing is uploaded again: stable gets the same file, signature, hash and notes. The build number is baked into the app itself, so it is kept, and it has to be **higher than stable's latest** (yanked releases count); otherwise Railcast says so and the fix is a newer build. `--from` and `--to` pick other channels, `--yes` skips the question (for CI). The dashboard has a Promote button on beta builds too.
 
 ## Pulling a bad release
 
