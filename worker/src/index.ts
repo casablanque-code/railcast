@@ -1315,9 +1315,11 @@ async function handleUpload(
     }
     const quota = positiveNumber(env.STORAGE_QUOTA_BYTES, DEFAULT_STORAGE_QUOTA_BYTES);
     const used = await env.DB.prepare(
-      `SELECT COALESCE(SUM(v.file_size), 0) AS used
-       FROM versions v JOIN apps a ON a.id = v.app_id
-       WHERE a.owner_user_id = ?`
+      `SELECT COALESCE(SUM(file_size), 0) AS used FROM (
+         SELECT DISTINCT v.file_key, v.file_size
+         FROM versions v JOIN apps a ON a.id = v.app_id
+         WHERE a.owner_user_id = ?
+       )`
     )
       .bind(owner.owner_user_id)
       .first<{ used: number }>();
@@ -1757,6 +1759,118 @@ async function handleSetYanked(
   return new Response(null, { status: 204 });
 }
 
+// POST /:appId/releases/:id/promote  {"channel": "stable"}   (default: stable)
+//
+// Release a build that's already published on another channel (typically beta)
+// to this channel, without uploading it again: a new row for the target channel
+// pointing at the same file, with the same signature, hash, notes and
+// requirements. The build number is kept as is — it is baked into the app itself
+// (CFBundleVersion), and Sparkle compares it with that — so it has to be higher
+// than everything already on the target channel (yanked releases included); if
+// it isn't, the answer is 409 and the fix is a newer build, not a renumbered one.
+async function handlePromote(
+  request: Request,
+  env: Env,
+  appId: string,
+  releaseId: string
+): Promise<Response> {
+  const auth = await requireAppOwnership(request, env, appId, "publish", { allowSession: true });
+  if (!auth.ok) return auth.response;
+  const origin = new URL(request.url).origin;
+  if (!hasValidOrigin(request, origin)) {
+    return jsonResponse({ error: "bad_origin" }, 403);
+  }
+
+  const id = Number(releaseId);
+  if (!Number.isInteger(id) || id <= 0) {
+    return jsonResponse({ error: "invalid_input", message: "release id must be a positive integer" }, 400);
+  }
+
+  let body: { channel?: unknown } = {};
+  const raw = await request.text();
+  if (raw.trim() !== "") {
+    try {
+      body = JSON.parse(raw) as { channel?: unknown };
+    } catch {
+      return jsonResponse({ error: "invalid_input", message: 'body must be JSON like {"channel": "stable"}' }, 400);
+    }
+  }
+  const target = body.channel ?? "stable";
+  if (typeof target !== "string" || !/^[A-Za-z0-9_-]{1,32}$/.test(target)) {
+    return jsonResponse({ error: "invalid_input", message: "channel must be 1-32 letters, digits, - or _" }, 400);
+  }
+
+  const source = await env.DB.prepare(
+    `SELECT channel, version, build_number, file_key, yanked FROM versions WHERE id = ? AND app_id = ?`
+  )
+    .bind(id, appId)
+    .first<{ channel: string; version: string; build_number: number; file_key: string; yanked: number }>();
+  if (!source) return jsonResponse({ error: "not_found" }, 404);
+  if (source.channel === target) {
+    return jsonResponse({ error: "conflict", message: `This release is already on channel '${target}'.` }, 409);
+  }
+  if (source.yanked === 1) {
+    return jsonResponse(
+      { error: "conflict", message: "This release is yanked — restore it before promoting it." },
+      409
+    );
+  }
+
+  // One statement: the checks and the insert can't be split by a concurrent
+  // publish. Nothing comes back when a check fails; the reason is worked out below.
+  const inserted = await env.DB.prepare(
+    `INSERT INTO versions
+       (app_id, channel, version, build_number, file_key, file_size, sha256, signature,
+        release_notes, critical, phased_rollout_interval, min_system_version, created_at)
+     SELECT app_id, ?1, version, build_number, file_key, file_size, sha256, signature,
+            release_notes, critical, phased_rollout_interval, min_system_version, ?2
+     FROM versions
+     WHERE id = ?3 AND app_id = ?4 AND yanked = 0
+       AND build_number > COALESCE(
+             (SELECT MAX(build_number) FROM versions WHERE app_id = ?4 AND channel = ?1), 0)
+     RETURNING id, channel, version, build_number, file_key`
+  )
+    .bind(target, Math.floor(Date.now() / 1000), id, appId)
+    .first<{ id: number; channel: string; version: string; build_number: number; file_key: string }>();
+
+  if (!inserted) {
+    const latest = await env.DB.prepare(
+      `SELECT MAX(build_number) AS max_build FROM versions WHERE app_id = ? AND channel = ?`
+    )
+      .bind(appId, target)
+      .first<{ max_build: number | null }>();
+    const already = await env.DB.prepare(
+      `SELECT 1 FROM versions WHERE app_id = ? AND channel = ? AND file_key = ?`
+    )
+      .bind(appId, target, source.file_key)
+      .first();
+    return jsonResponse(
+      {
+        error: "conflict",
+        message: already
+          ? `${source.version} (build ${source.build_number}) is already on channel '${target}'.`
+          : `Build ${source.build_number} is not higher than the latest build (${latest?.max_build}) on channel '${target}', ` +
+            `so Sparkle would never offer it there. Publish a newer build instead.`,
+      },
+      409
+    );
+  }
+
+  if (target === "stable") await purgeAppcastCache(origin, appId);
+  return jsonResponse(
+    {
+      id: inserted.id,
+      app_id: appId,
+      channel: inserted.channel,
+      version: inserted.version,
+      build_number: inserted.build_number,
+      file_key: inserted.file_key,
+      appcast_url: `/${appId}/appcast.xml?channel=${encodeURIComponent(inserted.channel)}`,
+    },
+    201
+  );
+}
+
 // Everything needed to leave: all releases with their signatures and file
 // keys, the app's public key, and (when files_url is given) ready-made
 // appcasts pointing at wherever the files will be hosted next. The CLI's
@@ -2160,6 +2274,12 @@ async function route(request: Request, env: Env): Promise<Response> {
     if (releaseYankMatch && request.method === "POST") {
       const [, appId, releaseId, action] = releaseYankMatch;
       return handleSetYanked(request, env, appId, releaseId, action === "yank");
+    }
+
+    const promoteMatch = url.pathname.match(/^\/([a-zA-Z0-9_-]+)\/releases\/([a-zA-Z0-9_-]+)\/promote$/);
+    if (promoteMatch && request.method === "POST") {
+      const [, appId, releaseId] = promoteMatch;
+      return handlePromote(request, env, appId, releaseId);
     }
 
     const feedRedirectMatch = url.pathname.match(/^\/([a-zA-Z0-9_-]+)\/feed-redirect$/);

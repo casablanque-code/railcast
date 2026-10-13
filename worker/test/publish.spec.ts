@@ -2214,3 +2214,145 @@ describe("feed Cache-Control for clients", () => {
     }
   });
 });
+
+describe("promote", () => {
+  async function publishOn(token: string, appId: string, version: string, build: number, channel: string, notes?: string) {
+    const { file_key, file_size, sha256 } = await uploadBuild(token, appId, `MyApp-${version}-${channel}.zip`, `bytes ${version} ${channel}`);
+    const res = await SELF.fetch(`https://railcast.test/${appId}/versions`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+      body: JSON.stringify({
+        version, build_number: build, channel, file_key, file_size, sha256, signature: `sig-${version}`,
+        release_notes: notes ?? null, min_system_version: "12.0",
+      }),
+    });
+    expect(res.status).toBe(201);
+    return ((await res.json()) as { id: number }).id;
+  }
+  const promote = (token: string, appId: string, id: number, body?: unknown) =>
+    SELF.fetch(`https://railcast.test/${appId}/releases/${id}/promote`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+      body: body === undefined ? undefined : JSON.stringify(body),
+    });
+  const feed = async (appId: string, qs = "") => (await SELF.fetch(`https://railcast.test/${appId}/appcast.xml${qs}`)).text();
+  const betaFeed = (appId: string) => feed(appId, "?channel=beta&token=beta-secret");
+
+  async function betaApp() {
+    const seeded = await seedUserAppAndToken();
+    await env.DB.prepare(`UPDATE apps SET beta_token = ? WHERE id = ?`).bind("beta-secret", seeded.appId).run();
+    return seeded;
+  }
+
+  it("releases a beta build to stable without uploading it again", async () => {
+    const { token, appId } = await betaApp();
+    const id = await publishOn(token, appId, "2.0.0", 5, "beta", "## Beta notes");
+    expect(await SELF.fetch(`https://railcast.test/${appId}/appcast.xml`).then((r) => r.status)).toBe(404); // nothing on stable yet
+
+    const res = await promote(token, appId, id); // default target: stable
+    expect(res.status).toBe(201);
+    const made = (await res.json()) as { id: number; channel: string; build_number: number; file_key: string };
+    expect(made.channel).toBe("stable");
+    expect(made.build_number).toBe(5); // kept: it is baked into the app
+
+    const xml = await feed(appId);
+    expect(xml).toContain("<sparkle:version>5</sparkle:version>");
+    expect(xml).toContain("<sparkle:shortVersionString>2.0.0</sparkle:shortVersionString>");
+    expect(xml).toContain("<sparkle:minimumSystemVersion>12.0<");
+    expect(xml).toContain("## Beta notes");
+    expect(xml).toContain('sparkle:edSignature="sig-2.0.0"');
+    expect(xml).toContain(made.file_key); // the very same file
+    // the beta release is still there
+    expect(await betaFeed(appId)).toContain("<sparkle:version>5</sparkle:version>");
+    expect((await env.BUILDS.head(made.file_key))).not.toBeNull();
+  });
+
+  it("refuses a build that isn't higher than stable's latest, and says what to do", async () => {
+    const { token, appId } = await betaApp();
+    await publishVersion(token, appId, "1.9.0", 7); // stable is at build 7
+    const id = await publishOn(token, appId, "1.8.5", 5, "beta");
+
+    const res = await promote(token, appId, id);
+    expect(res.status).toBe(409);
+    const msg = ((await res.json()) as { message: string }).message;
+    expect(msg).toContain("not higher");
+    expect(msg).toContain("Publish a newer build");
+    expect(await feed(appId)).not.toContain("<sparkle:version>5</sparkle:version>");
+  });
+
+  it("a yanked stable release still blocks lower builds, same as publishing would", async () => {
+    const { token, appId } = await betaApp();
+    await publishVersion(token, appId, "1.9.0", 7);
+    await publishVersion(token, appId, "1.9.1", 8);
+    const stableIds = (((await (await SELF.fetch(`https://railcast.test/${appId}/releases`, { headers: { Authorization: `Bearer ${token}` } })).json()) as { releases: { id: number; version: string }[] }).releases);
+    await SELF.fetch(`https://railcast.test/${appId}/releases/${stableIds.find((r) => r.version === "1.9.1")!.id}/yank`, { method: "POST", headers: { Authorization: `Bearer ${token}` } });
+    const id = await publishOn(token, appId, "1.9.0b", 8, "beta");
+    expect((await promote(token, appId, id)).status).toBe(409);
+  });
+
+  it("is refused twice, for a yanked source, for the same channel, and for strangers", async () => {
+    const { userId, token, appId } = await betaApp();
+    const id = await publishOn(token, appId, "2.0.0", 5, "beta");
+    expect((await promote(token, appId, id)).status).toBe(201);
+    const again = await promote(token, appId, id);
+    expect(again.status).toBe(409);
+    expect(((await again.json()) as { message: string }).message).toContain("already on channel 'stable'");
+
+    const id2 = await publishOn(token, appId, "2.1.0", 6, "beta");
+    await SELF.fetch(`https://railcast.test/${appId}/releases/${id2}/yank`, { method: "POST", headers: { Authorization: `Bearer ${token}` } });
+    const yanked = await promote(token, appId, id2);
+    expect(yanked.status).toBe(409);
+    expect(((await yanked.json()) as { message: string }).message).toContain("restore it");
+
+    expect((await promote(token, appId, id, { channel: "beta" })).status).toBe(409); // already on beta
+    expect((await promote(token, appId, id, { channel: "bad channel!" })).status).toBe(400);
+    expect((await promote(token, appId, 999999)).status).toBe(404);
+
+    const readOnly = await seedToken(userId, { scope: "read" });
+    expect((await promote(readOnly, appId, id2)).status).toBe(403);
+    const stranger = await seedUserAppAndToken();
+    expect((await promote(stranger.token, appId, id2)).status).toBe(403);
+  });
+
+  it("works from the dashboard session", async () => {
+    const { userId, token, appId } = await betaApp();
+    const id = await publishOn(token, appId, "2.0.0", 5, "beta");
+    const cookie = await seedSession(userId);
+    const res = await SELF.fetch(`https://railcast.test/${appId}/releases/${id}/promote`, { method: "POST", headers: { Cookie: cookie } });
+    expect(res.status).toBe(201);
+  });
+
+  it("deleting one of the two releases keeps the file the other one needs", async () => {
+    const { token, appId } = await betaApp();
+    const id = await publishOn(token, appId, "2.0.0", 5, "beta");
+    const made = (await (await promote(token, appId, id)).json()) as { id: number; file_key: string };
+    // add a second beta so the beta release can be deleted
+    await publishOn(token, appId, "2.1.0", 6, "beta");
+
+    const del = await SELF.fetch(`https://railcast.test/${appId}/releases/${id}`, { method: "DELETE", headers: { Authorization: `Bearer ${token}` } });
+    expect(del.status).toBe(204);
+    expect(await env.BUILDS.head(made.file_key)).not.toBeNull(); // still referenced by the stable release
+    expect(await feed(appId)).toContain(made.file_key);
+  });
+
+  it("counts a file shared by two releases once against the storage quota", async () => {
+    // STORAGE_QUOTA_BYTES is 4096 in vitest.config.mts; two rows of 3000 bytes sharing one file = 3000 used.
+    const { token, appId } = await betaApp();
+    const key = `${appId}/shared.zip`;
+    const insert = (channel: string, build: number) =>
+      env.DB.prepare(
+        `INSERT INTO versions (app_id, channel, version, build_number, file_key, file_size, sha256, signature, created_at)
+         VALUES (?, ?, '1.0.0', ?, ?, 3000, ?, 'sig', ?)`
+      ).bind(appId, channel, build, key, "0".repeat(64), Math.floor(Date.now() / 1000)).run();
+    await insert("beta", 1);
+    await insert("stable", 1);
+
+    const body = "x".repeat(900); // 3000 + 900 fits; double counting (6000) would not
+    const res = await SELF.fetch(`https://railcast.test/${appId}/upload/other.zip`, {
+      method: "PUT",
+      headers: { Authorization: `Bearer ${token}`, "X-Sha256": await sha256Hex(body) },
+      body,
+    });
+    expect(res.status).toBe(200);
+  });
+});
