@@ -143,6 +143,11 @@ export const api = {
     request<void>(`/${appId}/releases/${releaseId}/yank`, { method: "POST" }),
   unyankRelease: (appId: string, releaseId: number) =>
     request<void>(`/${appId}/releases/${releaseId}/unyank`, { method: "POST" }),
+  promoteRelease: (appId: string, releaseId: number, channel = "stable") =>
+    request<{ id: number; channel: string; version: string; build_number: number }>(
+      `/${appId}/releases/${releaseId}/promote`,
+      { method: "POST", body: JSON.stringify({ channel }) }
+    ),
   setFeedRedirect: (appId: string, url: string | null) =>
     request<{ feed_redirect_url: string | null }>(`/${appId}/feed-redirect`, {
       method: "PUT",

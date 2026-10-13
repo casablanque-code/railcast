@@ -25,6 +25,7 @@ vi.mock("@/lib/api", async (importOriginal) => {
       deleteRelease: fn(),
       yankRelease: fn(),
       unyankRelease: fn(),
+      promoteRelease: fn(),
       setFeedRedirect: fn(),
       exportApp: fn(),
       deleteAccount: fn(),
@@ -129,6 +130,69 @@ describe("yank / restore", () => {
     expect(await screen.findByText(/only live release/)).toBeInTheDocument();
     expect(screen.queryByText("yanked")).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Yank 1.1.0 (stable)" })).toBeEnabled();
+  });
+});
+
+describe("promote", () => {
+  const beta = (over: Partial<Release> = {}) =>
+    makeRelease({ id: 3, channel: "beta", version: "2.0.0", build_number: 5, file_key: "app1/MyApp-2.0.0.zip", ...over });
+
+  async function openReleasesWith(releases: Release[]) {
+    vi.mocked(api.listReleases).mockResolvedValue({ app_id: "app1", app_name: "MyApp", history_limit: 10, releases });
+    const user = userEvent.setup();
+    render(<DashboardPage />);
+    await user.click(await screen.findByRole("button", { name: "releases" }));
+    await screen.findAllByText(/2\.0\.0|1\.0\.0/);
+    return user;
+  }
+
+  it("is offered on beta builds only, and releases to stable after confirming", async () => {
+    vi.mocked(api.promoteRelease).mockResolvedValue({ id: 9, channel: "stable", version: "2.0.0", build_number: 5 });
+    const user = await openReleasesWith([beta(), makeRelease()]);
+
+    expect(screen.queryByRole("button", { name: /Promote 1\.0\.0/ })).not.toBeInTheDocument(); // stable build
+    // after the promotion the list is reloaded and shows the stable copy
+    vi.mocked(api.listReleases).mockResolvedValue({
+      app_id: "app1", app_name: "MyApp", history_limit: 10,
+      releases: [beta(), makeRelease({ id: 9, channel: "stable", version: "2.0.0", build_number: 5, file_key: "app1/MyApp-2.0.0.zip" }), makeRelease()],
+    });
+    await user.click(screen.getByRole("button", { name: "Promote 2.0.0 to stable" }));
+
+    expect(confirm).toHaveBeenCalledWith(expect.stringContaining("nothing is uploaded again"));
+    expect(api.promoteRelease).toHaveBeenCalledWith("app1", 3, "stable");
+    await waitFor(() => expect(api.listReleases).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(screen.queryByRole("button", { name: "Promote 2.0.0 to stable" })).not.toBeInTheDocument());
+  });
+
+  it("does nothing when you decline the confirmation", async () => {
+    confirm.mockReturnValue(false);
+    const user = await openReleasesWith([beta(), makeRelease()]);
+
+    await user.click(screen.getByRole("button", { name: "Promote 2.0.0 to stable" }));
+
+    expect(api.promoteRelease).not.toHaveBeenCalled();
+  });
+
+  it("shows the server's reason when the build isn't higher than stable's latest", async () => {
+    vi.mocked(api.promoteRelease).mockRejectedValue(
+      new ApiError(409, "Build 5 is not higher than the latest build (8) on channel 'stable'. Publish a newer build instead.")
+    );
+    const user = await openReleasesWith([beta(), makeRelease({ build_number: 8 })]);
+
+    await user.click(screen.getByRole("button", { name: "Promote 2.0.0 to stable" }));
+
+    expect(await screen.findByText(/Publish a newer build instead/)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Promote 2.0.0 to stable" })).toBeEnabled();
+  });
+
+  it("isn't offered when the build is already on stable, or is yanked", async () => {
+    await openReleasesWith([
+      beta({ id: 3 }),
+      makeRelease({ id: 9, channel: "stable", version: "2.0.0", build_number: 5, file_key: "app1/MyApp-2.0.0.zip" }),
+      beta({ id: 4, version: "2.1.0", build_number: 6, file_key: "app1/MyApp-2.1.0.zip", yanked: 1 }),
+    ]);
+
+    expect(screen.queryByRole("button", { name: /Promote/ })).not.toBeInTheDocument();
   });
 });
 

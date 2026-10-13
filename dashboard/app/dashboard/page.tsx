@@ -40,6 +40,7 @@ export default function DashboardPage() {
   const [releasesError, setReleasesError] = useState<Record<string, string>>({});
   const [deletingReleaseKey, setDeletingReleaseKey] = useState<string | null>(null);
   const [yankingKey, setYankingKey] = useState<string | null>(null);
+  const [promotingKey, setPromotingKey] = useState<string | null>(null);
 
   const [redirectInput, setRedirectInput] = useState<Record<string, string>>({});
   const [redirectBusy, setRedirectBusy] = useState<string | null>(null);
@@ -148,6 +149,42 @@ export default function DashboardPage() {
       }));
     } finally {
       setYankingKey((cur) => (cur === key ? null : cur));
+    }
+  }
+
+  // A beta build can be released to stable without uploading it again
+  // (`railcast promote`): same file, signature and notes, build number kept.
+  // Offered only where the server would accept it, so the button isn't a dead end.
+  function canPromote(appId: string, r: Release): boolean {
+    if (r.channel === "stable" || r.yanked === 1) return false;
+    const all = releasesByApp[appId] ?? [];
+    return !all.some((x) => x.channel === "stable" && x.file_key === r.file_key);
+  }
+
+  async function onPromote(appId: string, release: Release) {
+    if (
+      !window.confirm(
+        `Release ${release.version} (build ${release.build_number}) to stable? It goes to every user on ` +
+          `stable at their next update check, and Sparkle never downgrades. The same file and signature are ` +
+          `used — nothing is uploaded again. You can hide it again with Yank.`
+      )
+    ) {
+      return;
+    }
+    const key = `${appId}:${release.id}`;
+    setPromotingKey(key);
+    setReleasesError((prev) => ({ ...prev, [appId]: "" }));
+    try {
+      await api.promoteRelease(appId, release.id, "stable");
+      await loadReleases(appId);
+    } catch (err) {
+      // 409 explains itself: build not higher than stable's latest, already there, ...
+      setReleasesError((prev) => ({
+        ...prev,
+        [appId]: err instanceof ApiError ? err.message : "Couldn't promote the release",
+      }));
+    } finally {
+      setPromotingKey((cur) => (cur === key ? null : cur));
     }
   }
 
@@ -407,6 +444,18 @@ export default function DashboardPage() {
           </p>
         </div>
         <div className="flex shrink-0 items-center gap-3">
+          {canPromote(appId, r) && (
+            <button
+              type="button"
+              onClick={() => onPromote(appId, r)}
+              disabled={promotingKey === key}
+              aria-label={`Promote ${r.version} to stable`}
+              className="text-xs text-ink/60 hover:text-accent hover:underline disabled:opacity-50"
+              title="Release this build to stable without uploading it again"
+            >
+              {promotingKey === key ? "…" : "Promote"}
+            </button>
+          )}
           <button
             type="button"
             onClick={() => onToggleYank(appId, r)}
@@ -733,8 +782,9 @@ export default function DashboardPage() {
           {appList.length > 0 && (
             <p className="text-xs text-ink/50">
               Click <span className="font-mono">releases</span> on an app to see its published builds,
-              yank or delete them, move its feed to another host, or export everything — the same things{" "}
-              <span className="font-mono">railcast list</span>, <span className="font-mono">yank</span>,{" "}
+              promote a beta build to stable, yank or delete releases, move its feed to another host, or export everything — the same things{" "}
+              <span className="font-mono">railcast list</span>, <span className="font-mono">promote</span>,{" "}
+              <span className="font-mono">yank</span>,{" "}
               <span className="font-mono">redirect</span>, <span className="font-mono">export</span> and{" "}
               <span className="font-mono">cleanup</span> do from the CLI.
             </p>
