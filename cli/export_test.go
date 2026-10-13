@@ -103,3 +103,14 @@ func TestDoExport_MapsErrors(t *testing.T) {
 		}
 	}
 }
+
+func TestExportDestination_SameFileKeyTwiceMapsToOnePath(t *testing.T) {
+	// Promoted releases share a file_key; they must land on the same path so the
+	// file is written once.
+	out := t.TempDir()
+	a, _ := exportDestination(out, "app1/MyApp-2.0.0.zip")
+	b, _ := exportDestination(out, "app1/MyApp-2.0.0.zip")
+	if a != b {
+		t.Fatalf("expected one path, got %q and %q", a, b)
+	}
+}

@@ -14,6 +14,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   signature, hash and notes, build number kept (it is baked into the app). Refused when the
   build isn't higher than the target channel's latest, when it is already there, or when the
   source is yanked.
+- `railcast promote <version> [--from beta] [--to stable] [--yes]`: shows what will happen and asks
+  first (no answer means no); explains why a promotion is impossible (unknown or yanked source, build
+  not higher than the target's latest) before sending anything. `railcast export` writes a file shared
+  by two releases once.
 - Dashboard component tests (vitest, jsdom, Testing Library; the API is mocked): yank/restore,
   moving the feed, export, account deletion with the email confirmation, and the landing page's
   import/move-out sections. Run in CI (`Dashboard` job). The release buttons and the delete-account

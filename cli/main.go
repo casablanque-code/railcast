@@ -31,6 +31,8 @@ func main() {
 		cmdCleanup(os.Args[2:])
 	case "yank":
 		cmdYank(os.Args[2:])
+	case "promote":
+		cmdPromote(os.Args[2:])
 	case "export":
 		cmdExport(os.Args[2:])
 	case "redirect":
@@ -103,6 +105,13 @@ Usage:
       Pull a broken release: hide it from the appcast without deleting it,
       so new update checks get the previous build again. Sparkle never
       downgrades — people who already installed it need a newer build.
+
+  railcast promote <version> [--from beta] [--to stable] [--yes]
+      Release a build that's already on one channel (usually beta) to another,
+      without uploading it again: same file, signature and notes. Shows what
+      will happen and asks first — it goes to every user on the target channel.
+      The build number is part of the app itself, so it must be higher than the
+      target channel's latest.
 
   railcast export --app <id> --out <dir> [--files-url <https url>]
       Download everything: every release file (hash-checked), all

@@ -187,7 +187,59 @@ has "$STATIC_PORT" "$("$RAILCAST" redirect 2>&1)" || fail "railcast redirect (no
 "$RAILCAST" redirect --clear >/dev/null 2>&1 || fail "redirect --clear failed"
 expect_code "feed served by Railcast again after --clear" 200 "$FEED"
 
-# --- 6. delete the account (dashboard session) ---------------------------------
+# --- 6. promote: beta -> stable without uploading again --------------------------
+step "railcast promote (beta -> stable, same file, same signature)"
+BETA_TOKEN="$(curl -fsS -H "Authorization: Bearer $RAILCAST_TOKEN" "$RAILCAST_BASE_URL/api/apps" \
+  | python3 -c "import json,sys;print([a for a in json.load(sys.stdin)['apps'] if a['id']=='$APP_ID'][0]['beta_token'])")"
+BETA_FEED="$FEED?channel=beta&token=$BETA_TOKEN"
+publish 1.5.0 3 --channel beta   # an older build, published to beta first
+publish 2.0.0 5 --channel beta
+has '<sparkle:shortVersionString>2.0.0<' "$(curl -fsS "$BETA_FEED")" || fail "2.0.0 should be on the beta feed"
+has '<sparkle:shortVersionString>2.0.0<' "$(feed)" && fail "2.0.0 must not be on stable before it is promoted"
+
+OUT="$("$RAILCAST" promote 2.0.0 </dev/null 2>&1)" || fail "promote without --yes and without a terminal should cancel, not fail: $OUT"
+has "Cancelled" "$OUT" || fail "promote must ask first and treat no answer as no, got: $OUT"
+has '<sparkle:shortVersionString>2.0.0<' "$(feed)" && fail "a cancelled promote changed the stable feed"
+ok "promote asks first; no answer means no, and nothing changed"
+
+"$RAILCAST" promote 2.0.0 --yes > "$WORK/promote.log" 2>&1 || { cat "$WORK/promote.log"; fail "promote --yes failed"; }
+cat "$WORK/promote.log"
+feed > "$WORK/stable-after-promote.xml"
+curl -fsS "$BETA_FEED" > "$WORK/beta-feed.xml"
+item() { python3 - "$1" "$2" <<'PY'
+import re, sys
+xml, ver = open(sys.argv[1]).read(), sys.argv[2]
+item = [i for i in xml.split("<item>")[1:] if f"<sparkle:shortVersionString>{ver}<" in i][0]
+print(re.search(r'sparkle:edSignature="([^"]+)"', item).group(1), re.search(r'url="([^"]+)"', item).group(1), re.search(r'<sparkle:version>(\d+)<', item).group(1))
+PY
+}
+STABLE_ITEM="$(item "$WORK/stable-after-promote.xml" 2.0.0)"
+BETA_ITEM="$(item "$WORK/beta-feed.xml" 2.0.0)"
+[ "$STABLE_ITEM" = "$BETA_ITEM" ] || fail "stable and beta items differ: '$STABLE_ITEM' vs '$BETA_ITEM'"
+[ "${STABLE_ITEM##* }" = "5" ] || fail "the build number must be kept (5), got ${STABLE_ITEM##* }"
+ok "stable now offers 2.0.0 with the same signature, file URL and build number as beta"
+echo "${STABLE_ITEM%% *}" | base64 -d > "$WORK/sig-promoted.bin"
+openssl pkeyutl -verify -pubin -inkey "$WORK/pub.pem" -rawin -in "$WORK/build/MyApp-2.0.0.zip" -sigfile "$WORK/sig-promoted.bin" >/dev/null \
+  || fail "OpenSSL doesn't verify the promoted release's signature"
+ok "OpenSSL verifies the promoted release with the imported key"
+
+must_fail "promoting a build that isn't higher than stable's latest" "$RAILCAST" promote 1.5.0 --yes
+has "not higher" "$OUT" || fail "the refusal should say the build isn't higher, got: $OUT"
+has "publish a newer build" "$OUT" || fail "the refusal should say what to do instead, got: $OUT"
+has '<sparkle:shortVersionString>1.5.0<' "$(feed)" && fail "a refused promote must not reach the stable feed"
+
+AGAIN="$("$RAILCAST" promote 2.0.0 --yes 2>&1)" || fail "promoting twice should be a no-op, not an error: $AGAIN"
+has "already on channel" "$AGAIN" || fail "promoting twice should say it is already there, got: $AGAIN"
+ok "promoting twice is a no-op"
+
+# the promoted release shares its file with the beta one: export must write it once
+cp "$WORK/build/MyApp-2.0.0.zip" "$WORK/build/MyApp-1.5.0.zip" "$WORK/files/$APP_ID/"
+EXPORT3="$("$RAILCAST" export --app "$APP_ID" --out "$WORK/out3" --files-url "$FILES_URL" 2>&1)" || { echo "$EXPORT3"; fail "export after promote failed"; }
+has "same file as above" "$EXPORT3" || fail "export should notice the shared file, got: $EXPORT3"
+cmp "$WORK/out3/files/$APP_ID/MyApp-2.0.0.zip" "$WORK/build/MyApp-2.0.0.zip" || fail "exported promoted file differs"
+ok "export writes the file shared by beta and stable once"
+
+# --- 7. delete the account (dashboard session) ---------------------------------
 step "account deletion"
 del() { # email
   curl -s -o /dev/null -w '%{http_code}' -X DELETE -H "Cookie: $E2E_SESSION" -H 'Content-Type: application/json' \

@@ -81,7 +81,13 @@ func cmdExport(args []string) {
 
 	var totalBytes int64
 	downloaded, skipped := 0, 0
+	seen := map[string]bool{} // a promoted release shares its file with the one it came from
 	for i, r := range data.Releases {
+		if seen[r.FileKey] {
+			fmt.Printf("  [%d/%d] %s v%s — same file as above\n", i+1, len(data.Releases), r.Channel, r.Version)
+			continue
+		}
+		seen[r.FileKey] = true
 		dest, err := exportDestination(*outDir, r.FileKey)
 		if err != nil {
 			fail("%v", err)

@@ -32,7 +32,8 @@ type releaseSummary struct {
 	ReleaseNotes          string `json:"release_notes"`
 	Critical              int    `json:"critical"` // D1 stores 0/1, not a JSON bool
 	PhasedRolloutInterval *int   `json:"phased_rollout_interval"`
-	Yanked                int    `json:"yanked"` // 0/1, hidden from the appcast when 1
+	MinSystemVersion      string `json:"min_system_version"` // empty when the release has no minimum
+	Yanked                int    `json:"yanked"`             // 0/1, hidden from the appcast when 1
 	CreatedAt             int64  `json:"created_at"`
 }
 
