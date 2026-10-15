@@ -77,15 +77,25 @@ export default function LandingPage() {
 
       <section className="border-t border-line py-10">
         <h2 className="text-xs font-semibold uppercase tracking-wide text-ink/50">
-          Already shipping with Sparkle?
+          Switching from your own updater?
         </h2>
         <p className="mt-4 text-sm text-ink/60">
-          Bring the signing key you already have. Installed copies keep trusting your updates, so
-          there&apos;s no new app version to ship first.
+          <span className="font-medium text-ink">Already on Sparkle:</span> bring the signing key you have.
+          Installed copies keep trusting your updates, and you can move them to Railcast without shipping
+          a new app version first.
         </p>
-        <div className="mt-4">
+        <div className="mt-3">
           <CommandBlock command="railcast init --app myapp --import-key sparkle_private_key --token <token>" />
         </div>
+        <p className="mt-4 text-sm text-ink/60">
+          <span className="font-medium text-ink">Hand-rolled updater:</span> add Sparkle once, ship that
+          version the way you do today, and everything after it goes through Railcast.
+        </p>
+        <p className="mt-4 text-sm">
+          <a href="/migrate" className="underline hover:text-ink">
+            Step-by-step: switching to Railcast →
+          </a>
+        </p>
       </section>
 
       <section className="border-t border-line py-10">

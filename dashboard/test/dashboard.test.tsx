@@ -3,6 +3,7 @@ import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import DashboardPage from "@/app/dashboard/page";
 import LandingPage from "@/app/page";
+import MigratePage from "@/app/migrate/page";
 import { api, ApiError, type App, type Release } from "@/lib/api";
 import { goTo } from "@/lib/nav";
 
@@ -362,11 +363,48 @@ describe("signed-out visitors", () => {
 
   it("see the key import and moving-out sections on the landing page, no account needed", () => {
     render(<LandingPage />);
-    expect(screen.getByText("Already shipping with Sparkle?")).toBeInTheDocument();
+    expect(screen.getByText("Switching from your own updater?")).toBeInTheDocument();
+    expect(screen.getByText(/Already on Sparkle:/)).toBeInTheDocument();
+    expect(screen.getByText(/Hand-rolled updater:/)).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: /switching to Railcast/i })).toHaveAttribute("href", "/migrate");
     expect(screen.getByText(/railcast init --app myapp --import-key/)).toBeInTheDocument();
     expect(screen.getByText("Never locked in")).toBeInTheDocument();
     expect(screen.getByText(/railcast export --app myapp/)).toBeInTheDocument();
     expect(screen.getByText(/railcast redirect --to/)).toBeInTheDocument();
     expect(api.me).not.toHaveBeenCalled();
+  });
+});
+
+describe("switching guide (/migrate)", () => {
+  it("walks through export, import, publish and moving installed copies, with the commands", () => {
+    render(<MigratePage />);
+    expect(screen.getByRole("heading", { level: 1, name: /Switching from your own updater/ })).toBeInTheDocument();
+    for (const step of [
+      "Export your signing key",
+      "Create the app with that key",
+      "Publish your current release",
+      "Send installed copies to the new feed",
+    ]) {
+      expect(screen.getByRole("heading", { name: new RegExp(step) })).toBeInTheDocument();
+    }
+    expect(screen.getByText("./generate_keys -x sparkle_private_key")).toBeInTheDocument();
+    expect(screen.getByText(/railcast init --app myapp --import-key sparkle_private_key/)).toBeInTheDocument();
+    expect(screen.getByText(/railcast publish -f MyApp-1\.4\.0\.zip/)).toBeInTheDocument();
+    // both ways of moving installed copies
+    expect(screen.getByText(/You control the old feed URL/)).toBeInTheDocument();
+    expect(screen.getByText(/You don't\./)).toBeInTheDocument();
+  });
+
+  it("covers a hand-rolled updater and the way back out", () => {
+    render(<MigratePage />);
+    expect(screen.getByRole("heading", { name: /Hand-rolled updater, not Sparkle\?/ })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Not locked in" })).toBeInTheDocument();
+  });
+
+  it("is linked from the dashboard's create-an-app step, with the import command", async () => {
+    render(<DashboardPage />);
+    expect(await screen.findByText(/Already shipping with Sparkle\? Import the key/)).toBeInTheDocument();
+    expect(screen.getByText(/railcast init --app myapp --import-key sparkle_private_key --token/)).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: /switching from your own updater/i })).toHaveAttribute("href", "/migrate");
   });
 });

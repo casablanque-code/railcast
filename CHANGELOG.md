@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- A switching guide at `/migrate` (open to everyone, signed in or not — the landing page itself sends
+  signed-in users to the dashboard): export the Sparkle key, `init --import-key`, publish, and move
+  installed copies by redirecting the old feed URL or shipping one last update with the new
+  `SUFeedURL`; plus what to do with a hand-rolled, non-Sparkle updater. The landing page's
+  "Switching from your own updater?" section covers both cases and links to it, and so do the
+  footer and the dashboard's create-an-app step (which now shows the import command too).
 - Promote: `POST /:appId/releases/:id/promote` releases a build that is already on one channel
   (typically beta) to another (default stable) without uploading it again — same file,
   signature, hash and notes, build number kept (it is baked into the app). Refused when the

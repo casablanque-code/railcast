@@ -50,6 +50,9 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
           </header>
           {children}
           <footer className="mt-16 flex flex-wrap gap-x-5 gap-y-1 border-t border-line pt-6 text-xs text-ink/40">
+            <a href="/migrate" className="hover:text-ink">
+              Switching to Railcast
+            </a>
             <a href="/terms" className="hover:text-ink">
               Terms
             </a>

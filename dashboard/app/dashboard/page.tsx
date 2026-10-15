@@ -737,6 +737,19 @@ export default function DashboardPage() {
             className="mt-3"
             command={`railcast init --app myapp --token ${newToken ?? "<token from above>"}`}
           />
+          <p className="mt-4 text-sm text-ink/70">
+            Already shipping with Sparkle? Import the key your app already uses instead, so installed copies
+            keep trusting your updates:
+          </p>
+          <CommandBlock
+            className="mt-3"
+            command={`railcast init --app myapp --import-key sparkle_private_key --token ${newToken ?? "<token from above>"}`}
+          />
+          <p className="mt-3 text-xs text-ink/50">
+            <a href="/migrate" className="underline hover:text-ink">
+              Step-by-step: switching from your own updater →
+            </a>
+          </p>
         </div>
       </section>
 
