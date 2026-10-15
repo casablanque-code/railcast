@@ -8,33 +8,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.0] - 2026-10-16
+
 ### Added
-- A switching guide at `/migrate` (open to everyone, signed in or not — the landing page itself sends
-  signed-in users to the dashboard): export the Sparkle key, `init --import-key`, publish, and move
-  installed copies by redirecting the old feed URL or shipping one last update with the new
-  `SUFeedURL`; plus what to do with a hand-rolled, non-Sparkle updater. The landing page's
-  "Switching from your own updater?" section covers both cases and links to it, and so do the
-  footer and the dashboard's create-an-app step (which now shows the import command too).
-- Promote: `POST /:appId/releases/:id/promote` releases a build that is already on one channel
-  (typically beta) to another (default stable) without uploading it again — same file,
-  signature, hash and notes, build number kept (it is baked into the app). Refused when the
-  build isn't higher than the target channel's latest, when it is already there, or when the
-  source is yanked.
-- `railcast promote <version> [--from beta] [--to stable] [--yes]`: shows what will happen and asks
-  first (no answer means no); explains why a promotion is impossible (unknown or yanked source, build
-  not higher than the target's latest) before sending anything. `railcast export` writes a file shared
-  by two releases once.
-- Dashboard: a "Promote" button on beta builds (hidden once the build is on stable or when it is
-  yanked), with the server's reason when the build isn't higher than stable's latest.
+- **Promote** a build from one channel to another without uploading it again, typically
+  beta → stable: `railcast promote <version> [--from beta] [--to stable] [--yes]`,
+  `POST /:appId/releases/:id/promote`, and a "Promote" button on beta builds in the dashboard.
+  Stable gets the same file, signature, hash and notes; the build number is kept (it is baked
+  into the app) and must be higher than the target channel's latest. The CLI shows what will
+  happen and asks first (no answer means no) and explains why a promotion is impossible before
+  sending anything. The server refuses a build that isn't higher, one that is already there,
+  or a yanked source. A file shared by two releases counts once against the storage quota,
+  survives deleting one of the two, and `railcast export` writes it once.
+- A switching guide at `/migrate` (open to everyone, signed in or not): export the Sparkle key,
+  `init --import-key`, publish, and move installed copies by redirecting the old feed URL or
+  shipping one last update with the new `SUFeedURL`; plus what to do with a hand-rolled,
+  non-Sparkle updater. The landing page's "Switching from your own updater?" section, the footer
+  and the dashboard's create-an-app step (which now shows the import command too) link to it.
 - Dashboard component tests (vitest, jsdom, Testing Library; the API is mocked): yank/restore,
-  moving the feed, export, account deletion with the email confirmation, and the landing page's
-  import/move-out sections. Run in CI (`Dashboard` job). The release buttons and the delete-account
-  field got accessible names.
+  promote, moving the feed, export, account deletion with the email confirmation, the landing
+  page and the switching guide. They run in CI (`Dashboard` job). The release buttons and the
+  delete-account field got accessible names.
 
 ### Fixed
-- After a yank, restore or publish the feed URL showed the old XML in a browser until a hard
+- After a yank, restore or publish, the feed URL showed the old XML in a browser until a hard
   refresh: the feed was sent with `max-age=60`. Clients now get `Cache-Control: no-cache`; only
   the edge copy is kept for 60 s (`s-maxage`).
+
+### Docs
+- README: "From beta to stable" and a link to the switching guide. `AGENTS.md`: promote replaces
+  the old workaround, and agents must not pass `--yes` without explicit human approval.
 
 ## [0.10.0] - 2026-10-08
 
