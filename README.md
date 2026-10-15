@@ -79,6 +79,8 @@ double check:
 
 ## Already shipping with Sparkle?
 
+A step-by-step guide, including what to do with a hand-rolled (non-Sparkle) updater, is at [railcast.casablanque.com/migrate](https://railcast.casablanque.com/migrate). The short version:
+
 Installed copies only trust the `SUPublicEDKey` they shipped with, so reuse your existing key instead of generating a new one:
 
 ```bash
